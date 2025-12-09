@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "laserion"
+version = "0.1.0"
+description = "Laser field, ADK ionization, and MDF toolkit"
+readme = "src/laserion/README.md"
+requires-python = ">=3.9"
+authors = [
+  { name = "Thales Silva" }
+]
+
+dependencies = [
+  "numpy>=1.20",
+  "scipy>=1.8",
+  "matplotlib>=3.5",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
