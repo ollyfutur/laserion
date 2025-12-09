@@ -89,22 +89,29 @@ class PlaneWaveProfile(TransverseProfile):
 
 
 class HermiteTransverse(TransverseProfile):
-    def __init__(self, w0, zf=0.0, l=0, m=0):
+    def __init__(self, w0, zf=0.0, l=0, m=0, x0=0.0, y0=0.0):
         """
-        Hermite-Gaussian transverse profile (envelope only).
+        Hermite-Gaussian transverse profile (envelope only), in the *beam frame*.
+
+        Beam frame coordinates: r' = (x', y', z'), where z' is along the
+        propagation direction k̂, and the origin is at r_start.
 
         w0 : float
             Beam waist at focus [µm]
         zf : float
-            Focus position along propagation axis [µm]
+            Focus position along propagation axis z' [µm], measured from r_start.
         l, m : int
-            Hermite mode indices in x and y
+            Hermite mode indices in x' and y'
+        x0, y0 : float
+            Transverse offset of the beam centre in the beam frame [µm].
         """
 
         self.w0 = w0
         self.zf = zf
         self.l = l
         self.m = m
+        self.x0 = x0
+        self.y0 = y0
 
     def _compute_params(self, wavelength: float):
         z0 = np.pi * self.w0**2 / wavelength
@@ -112,28 +119,33 @@ class HermiteTransverse(TransverseProfile):
         return z0, k
 
     def __call__(self, r: np.ndarray, wavelength: float):
+        # r is the beam-frame coords: (x', y', z')
         x, y, z = np.asarray(r, dtype=float)
+        x_rel = x - self.x0
+        y_rel = y - self.y0
         z_rel = z - self.zf  # shift to focus position
 
         z0, _ = self._compute_params(wavelength)
         wz = self.w0 * np.sqrt(1.0 + (z_rel / z0) ** 2)
 
         # Hermite polynomials H_l, H_m
-        H_l = np.polynomial.hermite.hermval(np.sqrt(2) * x / wz, [0] * self.l + [1])
-        H_m = np.polynomial.hermite.hermval(np.sqrt(2) * y / wz, [0] * self.m + [1])
+        H_l = np.polynomial.hermite.hermval(np.sqrt(2) * x_rel / wz, [0] * self.l + [1])
+        H_m = np.polynomial.hermite.hermval(np.sqrt(2) * y_rel / wz, [0] * self.m + [1])
 
-        gauss = np.exp(-(x**2 + y**2) / wz**2)
+        gauss = np.exp(-(x_rel**2 + y_rel**2) / wz**2)
 
         # transverse envelope
         return (self.w0 / wz) * H_l * H_m * gauss
 
     def phase(self, r: np.ndarray, wavelength: float) -> float:
         """
-        Spatial phase for Hermite-Gaussian mode:
-        curvature + Gouy phase
+        Spatial phase for Hermite-Gaussian mode: curvature + Gouy phase,
+        in beam-frame coordinates, centred on (x0, y0, zf).
         """
         x, y, z = np.asarray(r, dtype=float)
-        z_rel = z - self.zf
+        x_rel = x - self.x0
+        y_rel = y - self.y0
+        z_rel = z - self.zf  # shift to focus position
         z0, k = self._compute_params(wavelength)
 
         # Radius of curvature R(z)
@@ -141,11 +153,11 @@ class HermiteTransverse(TransverseProfile):
             curvature = 0.0
         else:
             R = (z_rel**2 + z0**2) / z_rel
-            curvature = k * (x**2 + y**2) / (2.0 * R)
+            curvature = -k * (x_rel**2 + y_rel**2) / (2.0 * R)
 
         # Gouy phase
         zeta = np.arctan2(z_rel, z0)
-        gouy = -(self.l + self.m + 1) * zeta
+        gouy = (self.l + self.m + 1) * zeta
 
         return curvature + gouy
 
@@ -156,16 +168,16 @@ class GaussianTransverse(HermiteTransverse):
     implemented as HermiteTransverse with l = m = 0.
     """
 
-    def __init__(self, w0, zf=0.0):
+    def __init__(self, w0, zf=0.0, x0=0.0, y0=0.0):
         """
-        wavelength : float
-            Laser wavelength [µm]
         w0 : float
             Beam waist at focus [µm]
         zf : float
-            Focus position along propagation axis [µm]
+            Focus position along beam axis z' [µm] from r_start.
+        x0, y0 : float
+            Transverse offset of the beam centre in beam-frame coords [µm].
         """
-        super().__init__(w0=w0, zf=zf, l=0, m=0)
+        super().__init__(w0=w0, zf=zf, l=0, m=0, x0=x0, y0=y0)
 
 
 # %% ############################# ####
@@ -232,47 +244,141 @@ class Polarization:
         """
         return abs(self.p2) < tol
 
+    @classmethod
+    def from_lab_direction(cls, k_vec, pol_hint, delta=0.0):
+        """
+        Build a Polarization object for a beam with propagation k_vec (lab),
+        using a lab-frame 'hint' pol_hint (e.g. (1,0,0) for 'x-like').
+
+        The resulting polarization is strictly transverse to k̂ and uses a
+        lab-consistent basis (e1,e2) derived from k̂ and the lab z-axis.
+
+        Parameters
+        ----------
+        k_vec : array_like, shape (3,)
+            Propagation direction in lab frame.
+        pol_hint : array_like, shape (3,)
+            Desired polarization direction in lab frame (will be projected
+            onto the transverse plane).
+        delta : float
+            Phase lag between e1 and e2 (for elliptical / circular states).
+            For linear polarization, use delta = 0.
+        """
+        k_vec = np.asarray(k_vec, dtype=float)
+        k_hat = k_vec / np.linalg.norm(k_vec)
+
+        # --- build beam-frame transverse basis (e1,e2) ---
+        z_hat = np.array([0.0, 0.0, 1.0])
+        if abs(np.dot(z_hat, k_hat)) < 0.999999:
+            e1 = z_hat - np.dot(z_hat, k_hat) * k_hat
+            e1 /= np.linalg.norm(e1)
+        else:
+            e1 = np.array([1.0, 0.0, 0.0])  # fallback if k ∥ z
+
+        e2 = np.cross(k_hat, e1)
+        e2 /= np.linalg.norm(e2)
+
+        # --- project pol_hint onto transverse plane ---
+        ph = np.asarray(pol_hint, dtype=float)
+        if np.linalg.norm(ph) == 0:
+            raise ValueError("pol_hint cannot be zero.")
+
+        ph_perp = ph - np.dot(ph, k_hat) * k_hat
+        if np.linalg.norm(ph_perp) < 1e-12:
+            # Nearly parallel to k: fall back to e1
+            ph_perp = e1.copy()
+        ph_perp /= np.linalg.norm(ph_perp)
+
+        # components in (e1,e2)
+        p1 = float(np.dot(ph_perp, e1))
+        p2 = float(np.dot(ph_perp, e2))
+        norm_p = np.hypot(p1, p2)
+        if norm_p > 0:
+            p1 /= norm_p
+            p2 /= norm_p
+
+        return cls(e1=e1, e2=e2, p1=p1, p2=p2, delta=delta)
+
 
 class LinearPolarization(Polarization):
     """
-    Linear polarization in the x–y plane, at a given angle with respect to +x.
+    Linear polarization in the transverse plane of a beam.
 
-    angle : float
-        Angle with the x-axis in degrees (0 → x, 90 → y, etc.).
+    For a beam with propagation direction k_vec, we build a transverse basis
+    (e1_base, e2_base) tied to the lab frame (using z as a reference if possible).
+    The polarization is then:
+
+        E ∝ cos(angle) * e1_base + sin(angle) * e2_base,
+
+    with 'angle' measured in that transverse plane. For k_vec || z, e1_base = x,
+    e2_base = y, so angle=0 → x, angle=90° → y, as in the standard case.
     """
 
-    def __init__(self, angle: float = 0.0):
-        # Unit vector along polarization direction in xy-plane
-        angle = angle * np.pi / 180.0  # to radians
-        ex = np.cos(angle)
-        ey = np.sin(angle)
-        e1 = (ex, ey, 0.0)
+    def __init__(self, k_vec, angle: float = 0.0):
+        k_vec = np.asarray(k_vec, dtype=float)
+        k_hat = k_vec / np.linalg.norm(k_vec)
 
-        # Orthogonal unit vector in xy-plane
-        e2 = (-ey, ex, 0.0)
+        # Build transverse basis (e1_base, e2_base) tied to lab frame
+        z_hat = np.array([0.0, 0.0, 1.0])
+        if abs(np.dot(z_hat, k_hat)) < 0.999999:
+            e1_base = z_hat - np.dot(z_hat, k_hat) * k_hat
+            e1_base /= np.linalg.norm(e1_base)
+        else:
+            # If k is (anti-)parallel to z, fall back to x as reference
+            e1_base = np.array([1.0, 0.0, 0.0])
 
-        # Pure linear: p2 = 0, delta irrelevant
-        super().__init__(e1=e1, e2=e2, p1=1.0, p2=0.0, delta=0.0)
+        e2_base = np.cross(k_hat, e1_base)
+        e2_base /= np.linalg.norm(e2_base)
+
+        # Angle in radians
+        theta = angle * np.pi / 180.0
+
+        # Polarization direction in the transverse plane
+        # e_pol = cos θ e1_base + sin θ e2_base
+        p1 = np.cos(theta)
+        p2 = np.sin(theta)
+
+        super().__init__(e1=e1_base, e2=e2_base, p1=p1, p2=p2, delta=0.0)
 
 
 class CircularPolarization(Polarization):
     """
-    Circular polarization in the x–y plane.
+    Circular polarization in the transverse plane of a beam.
 
-    sense : {"right", "left", "cw", "ccw"}
-        Handedness. "right"/"cw" → +π/2 phase; "left"/"ccw" → -π/2.
-    angle : float
-        Orientation angle of the e1 axis w.r.t. +x, in degrees.
-        angle = 0 → e1 along x, e2 along y.
+    For a beam with propagation direction k_vec, we build a transverse basis
+    (e1_base, e2_base) tied to the lab frame (using z as a reference if possible).
+
+    We then optionally rotate this basis by 'angle' in the transverse plane:
+
+        e1 = cos(angle) * e1_base + sin(angle) * e2_base
+        e2 = -sin(angle) * e1_base + cos(angle) * e2_base
+
+    and define circular polarization with equal amplitudes p1 = p2 = 1 and
+    phase lag δ = ±π/2 between e1 and e2.
     """
 
-    def __init__(self, sense: str = "right", angle: float = 0.0):
-        # Basis in xy-plane rotated by angle
-        angle = angle * np.pi / 180.0  # to radians
-        ex = np.cos(angle)
-        ey = np.sin(angle)
-        e1 = (ex, ey, 0.0)
-        e2 = (-ey, ex, 0.0)  # 90° rotated in-plane
+    def __init__(self, k_vec, sense: str = "right", angle: float = 0.0):
+        k_vec = np.asarray(k_vec, dtype=float)
+        k_hat = k_vec / np.linalg.norm(k_vec)
+
+        # Build transverse basis (e1_base, e2_base) tied to lab frame
+        z_hat = np.array([0.0, 0.0, 1.0])
+        if abs(np.dot(z_hat, k_hat)) < 0.999999:
+            e1_base = z_hat - np.dot(z_hat, k_hat) * k_hat
+            e1_base /= np.linalg.norm(e1_base)
+        else:
+            e1_base = np.array([1.0, 0.0, 0.0])
+
+        e2_base = np.cross(k_hat, e1_base)
+        e2_base /= np.linalg.norm(e2_base)
+
+        # Rotate the transverse basis by 'angle' in that plane
+        theta = angle * np.pi / 180.0
+        cos_t = np.cos(theta)
+        sin_t = np.sin(theta)
+
+        e1 = cos_t * e1_base + sin_t * e2_base
+        e2 = -sin_t * e1_base + cos_t * e2_base
 
         # Choose phase lag for handedness
         sense_l = sense.lower()
@@ -299,10 +405,10 @@ class SinglePulse(LaserPulse):
 
     - temporal  : TemporalProfile instance (e.g. GaussianTemporal)
     - transverse: TransverseProfile instance (e.g. PlaneWaveProfile, GaussianTransverse, HermiteTransverse)
-    - polarization: Polarization instance or a simple 3-vector meaning "linear polarization along this direction"
+    - polarization: Polarization instance (e.g. LinearPolarization, CircularPolarization, or Polarization)"
     """
 
-    def __init__(self, E_0, wavelength, temporal: TemporalProfile, transverse: TransverseProfile, polarization=(1.0, 0.0, 0.0), phase_0=0.0, k_vec=(0.0, 0.0, 1.0), use_retarded_time=True, pulse_center=0.0):
+    def __init__(self, E_0, wavelength, temporal: TemporalProfile, transverse: TransverseProfile, polarization: Polarization, phase_0=0.0, k_vec=(0.0, 0.0, 1.0), use_retarded_time=True, r_start=(0.0, 0.0, 0.0)):
         """
         Parameters
         ----------
@@ -313,99 +419,138 @@ class SinglePulse(LaserPulse):
         temporal : TemporalProfile
             Temporal envelope object, e.g. GaussianTemporal(tau).
         transverse : TransverseProfile
-            Transverse envelope object, e.g. PlaneWaveProfile, GaussianTransverse, HermiteTransverse.
-        polarization : tuple of 3 floats
-            Polarization vector (will be normalized).
+            Transverse envelope object (GaussianTransverse, HermiteTransverse, ...),
+            defined in beam-frame coordinates.
+        polarization : Polarization
+            Polarization object defining the polarization state
+            in the beam frame.
         phase_0 : float
-            Global carrier phase at reference (t=0, r=0) [rad].
+            Global carrier phase offset [rad].
         k_vec : tuple of 3 floats
-            Propagation direction (will be normalized).
+            Propagation direction in lab frame (will be normalized).
         use_retarded_time : bool
-            If True: t_eff = t - (s - pulse_center)/c, where s = k̂·r.
-            If False: t_eff = t (no retarded-time shift).
-        pulse_center : float
-            Pulse-center coordinate along k̂ at t = 0 (in same length units as r).
+            If True, the envelope uses t_eff = t - z'/c with z' along k̂
+            and origin at r_start.
+        r_start : 3-tuple
+            Lab position of the pulse envelope centre at t=0 (z' = 0).
         """
+
+        if not isinstance(temporal, TemporalProfile):
+            raise TypeError("temporal must be an instance of TemporalProfile.")
+
+        if not isinstance(transverse, TransverseProfile):
+            raise TypeError("transverse must be an instance of TransverseProfile.")
+
+        if not isinstance(polarization, Polarization):
+            raise TypeError("polarization must be an instance of Polarization.")
+
         self.E_0 = E_0
         self.wavelength = wavelength
         self.temporal = temporal
         self.transverse = transverse
         self.phase_0 = phase_0
+        self.polarization = polarization
 
         k_vec = np.array(k_vec, dtype=float)
         self.k_hat = k_vec / np.linalg.norm(k_vec)
 
         self.use_retarded_time = use_retarded_time
-        self.pulse_center = pulse_center  # coordinate along k_hat at t=0
+        self.r_start = np.asarray(r_start, dtype=float)
 
         # constants in µm/fs units
         self.c = 0.299792458
         self.omega = 2.0 * np.pi * self.c / wavelength
         self.k = 2.0 * np.pi / wavelength
 
-        if isinstance(polarization, Polarization):
-            self.polarization = polarization
+        # -------------------------------------------------
+        # Beam-frame transverse basis tied to the lab frame
+        # -------------------------------------------------
+        z_hat = np.array([0.0, 0.0, 1.0])
+        # If k_hat not parallel to z, project z onto transverse plane
+        if abs(np.dot(z_hat, self.k_hat)) < 0.999999:
+            e1 = z_hat - np.dot(z_hat, self.k_hat) * self.k_hat
+            e1 /= np.linalg.norm(e1)
         else:
-            # interpret as a linear polarization 3-vector
-            pvec = np.asarray(polarization, dtype=float)
-            if np.linalg.norm(pvec) == 0:
-                raise ValueError("Polarization vector cannot be zero.")
-            e1 = pvec / np.linalg.norm(pvec)
+            # If beam is (anti-)parallel to z, fall back to x as reference
+            e1 = np.array([1.0, 0.0, 0.0])
 
-            # choose some e2 perpendicular to e1 for the basis
-            # try k_hat × e1; if parallel, pick an arbitrary perpendicular
-            tmp = np.cross(self.k_hat, e1)
-            if np.linalg.norm(tmp) < 1e-12:
-                # e1 parallel to k_hat; choose any vector not parallel
-                alt = np.array([1.0, 0.0, 0.0])
-                if abs(np.dot(alt, e1)) > 0.9:
-                    alt = np.array([0.0, 1.0, 0.0])
-                tmp = np.cross(e1, alt)
-            e2 = tmp / np.linalg.norm(tmp)
+        e2 = np.cross(self.k_hat, e1)
+        e2 /= np.linalg.norm(e2)
 
-            # pure linear along e1 => p1=1, p2=0
-            self.polarization = Polarization(e1=e1, e2=e2, p1=1.0, p2=0.0)
+        # Save beam-frame transverse basis
+        self.e_xb = e1  # x' direction in lab coords
+        self.e_yb = e2  # y' direction in lab coords
+        # -------------------------------------------------
+
+        self._A_cache = None
+
+    def _axis_coords(self, r: np.ndarray):
+        """
+        Return (dr, z') with
+          dr = r - r_start  (vector in lab frame),
+          z' = dr · k_hat   (coordinate along beam axis).
+        """
+        dr = np.asarray(r, dtype=float) - self.r_start
+        z_prime = float(np.dot(dr, self.k_hat))
+        return dr, z_prime
+
+    def _to_beam_frame(self, r: np.ndarray) -> np.ndarray:
+        """
+        Convert lab position r to beam-frame coordinates (x', y', z'):
+
+            dr = r - r_start
+            x' = dr · e_xb
+            y' = dr · e_yb
+            z' = dr · k_hat
+        """
+        dr, z_prime = self._axis_coords(r)
+        x_prime = float(np.dot(dr, self.e_xb))
+        y_prime = float(np.dot(dr, self.e_yb))
+        return np.array([x_prime, y_prime, z_prime])
 
     def _t_eff(self, t, r: np.ndarray) -> float:
         """
         Effective (retarded) time at position r.
 
         If use_retarded_time:
-            s = k̂ · r
-            t_eff = t - (s - pulse_center)/c
+            z' = (r - r_start) · k_hat
+            t_eff = t - z'/c
         else:
             t_eff = t
         """
         if not self.use_retarded_time:
             return float(t)
 
-        r = np.asarray(r, dtype=float)
-        s = np.dot(self.k_hat, r)
-        return float(t) - (s - self.pulse_center) / self.c
+        _, z_prime = self._axis_coords(r)
+        return float(t) - z_prime / self.c
 
-    def _spatial_phase(self, r: np.ndarray) -> float:
+    def _spatial_phase(self, r_beam: np.ndarray) -> float:
         """
-        Total spatial phase contribution (excluding ω t_eff):
-            φ_spatial = -k (k̂·r) + φ_profile(r) + phase_0
-        """
-        r = np.asarray(r, dtype=float)
-        s = np.dot(self.k_hat, r)
-        phi_pw = -self.k * s  # plane-wave term
-        phi_profile = self.transverse.phase(r, self.wavelength)  # curvature + Gouy for HG, 0 for plane wave
+        Spatial phase contribution (excluding ω t_eff):
 
-        return phi_pw + phi_profile + self.phase_0
+            φ_spatial = φ_profile(r_beam) + phase_0
+
+        The plane-wave term −k z' is effectively taken into account through
+        the retarded time t_eff = t − z'/c in the carrier cos(ω t_eff + φ_spatial).
+        """
+        phi_profile = self.transverse.phase(r_beam, self.wavelength)
+        return phi_profile + self.phase_0
 
     def E(self, t, r: np.ndarray) -> np.ndarray:
         """
         Electric field:
-            E = E_0 * temporal(t_eff) * transverse(r) * cos(ω t_eff + φ_spatial(r)) * polarization
+            E = E_0 * temporal(t_eff) * transverse(r_beam)
+                * cos(ω t_eff + φ_spatial(r_beam)) * polarization_vector
         """
+        r = np.asarray(r, dtype=float)
+        r_beam = self._to_beam_frame(r)
+
         t_eff = self._t_eff(t, r)
 
-        env_t = self.temporal(t_eff)  # scalar temporal envelope
-        env_r = self.transverse(r, self.wavelength)  # scalar transverse envelope
+        env_t = self.temporal(t_eff)
+        env_r = self.transverse(r_beam, self.wavelength)
 
-        phi_spatial = self._spatial_phase(r)
+        phi_spatial = self._spatial_phase(r_beam)
 
         phase = self.omega * t_eff + phi_spatial
         pol_vec = self.polarization.vector(phase)
@@ -418,8 +563,8 @@ class SinglePulse(LaserPulse):
         and store an interpolator for later calls to A(t, r).
 
         If t_min/t_max are None and the temporal profile is GaussianTemporal,
-        the window is chosen so that the envelope at this position is ~ envelope_cut
-        at the edges.
+        the window is chosen so that the envelope at this position is
+        ~ envelope_cut at the edges.
         """
         r = np.asarray(r, dtype=float)
 
@@ -431,8 +576,8 @@ class SinglePulse(LaserPulse):
 
             # pulse arrival time at this position
             if self.use_retarded_time:
-                s = np.dot(self.k_hat, r)
-                t_center = (s - self.pulse_center) / self.c
+                _, z_prime = self._axis_coords(r)
+                t_center = z_prime / self.c
             else:
                 t_center = 0.0
 
@@ -454,9 +599,9 @@ class SinglePulse(LaserPulse):
         t_grid = t_min + dt * np.arange(n_steps)
 
         # compute E(t, r) on the grid
-        E_grid = np.array([self.E(t, r) for t in t_grid])  # shape (N, 3)
+        E_grid = np.array([self.E(t, r) for t in t_grid])
 
-        # A(t) = -∫ E dt  (keep DC offset!)
+        # A(t) = -∫ E dt
         A_grid = -cumulative_trapezoid(E_grid, t_grid, axis=0, initial=0.0)
 
         interp = interp1d(
@@ -635,8 +780,9 @@ class MultiPulse(LaserPulse):
             List/tuple of pulse objects (e.g. SinglePulse instances).
         """
         self.pulses = list(pulses)
-        if len(self.pulses) == 0:
-            raise ValueError("MultiPulse requires at least one sub-pulse.")
+        for p in self.pulses:
+            if not isinstance(p, LaserPulse):
+                raise TypeError("All entries in pulses must be instances of LaserPulse.")
 
         # use c from first pulse if available, otherwise default
         first = self.pulses[0]
@@ -681,8 +827,12 @@ class MultiPulse(LaserPulse):
                     t_lim = tau * np.sqrt(0.5 * np.log(1.0 / envelope_cut))
 
                     if getattr(p, "use_retarded_time", False):
-                        s = np.dot(p.k_hat, r)
-                        t_center = (s - p.pulse_center) / p.c
+                        # use each pulse's own beam-frame geometry
+                        if hasattr(p, "_axis_coords"):
+                            _, z_prime = p._axis_coords(r)
+                            t_center = z_prime / p.c
+                        else:
+                            t_center = 0.0
                     else:
                         t_center = 0.0
 
@@ -714,9 +864,9 @@ class MultiPulse(LaserPulse):
         t_grid = t_min + dt * np.arange(n_steps)
 
         # total E(t, r) on grid
-        E_grid = np.array([self.E(t, r) for t in t_grid])  # (N, 3)
+        E_grid = np.array([self.E(t, r) for t in t_grid])
 
-        # A_total(t) = -∫ E_total dt, keep DC offset
+        # A_total(t) = -∫ E_total dt
         A_grid = -cumulative_trapezoid(E_grid, t_grid, axis=0, initial=0.0)
 
         interp = interp1d(
@@ -1250,6 +1400,3 @@ class MDF:
 
         else:
             raise ValueError(f"Unknown kind={kind!r}. Use 'px', 'py', 'pz', or 'pxpy'.")
-
-
-# %%
