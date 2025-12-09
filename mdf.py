@@ -24,16 +24,7 @@ class MDF:
 
     CONV_A_TO_P = -0.0005866792097892349  # A [GV/m·fs] -> p [m_e c]
 
-    def __init__(
-        self,
-        pulse,
-        species: str,
-        Z,
-        r,
-        ion_model: Optional[IonizationModel] = None,
-        envelope_cut: float = 1e-6,
-        dt: Optional[float] = None,
-    ):
+    def __init__(self, pulse, species: str, Z, r, ion_model: Optional[IonizationModel] = None, envelope_cut: float = 1e-6, dt: Optional[float] = None):
         """
         Parameters
         ----------
@@ -155,16 +146,7 @@ class MDF:
     # -----------------------------
     # Plot interface
     # -----------------------------
-    def plot(
-        self,
-        kind: str = "px",
-        levels="all",
-        bins: int = 200,
-        ax=None,
-        cmap="viridis",
-        normalize: bool = False,
-        label: str = None,
-    ):
+    def plot(self, kind: str = "px", levels="all", bins: int = 200, ax=None, cmap: str = "viridis", normalize: bool = False, label: str = None, figsize: tuple = (10, 8), weight: bool = False, **kwargs):
         """
         Plot the MDF in various projections.
 
@@ -182,11 +164,19 @@ class MDF:
         ax : matplotlib Axes, optional
             If given, plot on this Ax; otherwise create a new figure.
         cmap : str
-            Colormap for 2D plots.
+            Default colormap for 2D plots (can be overridden via kwargs["cmap"]).
         normalize : bool
             Normalize the selected distribution to sum=1?
         label : str, optional
             Label for the legend (useful when over-plotting multiple calls).
+        figsize : tuple, optional
+            Figure size used when ax is None (default: (10, 8)).
+        weight : bool
+            If True, weight the histogram by the momentum value (i.e., plot p·f(p)).
+        **kwargs :
+            Extra keyword arguments passed to:
+              - ax.plot(...) for 1D plots
+              - ax.imshow(...) for 2D plots
         """
 
         idxs = self._level_indices(levels)
@@ -210,21 +200,22 @@ class MDF:
             F, _ = np.histogram(p, bins=edges, weights=dP_sel)
 
             # --- Create axes if needed ---
+            created_ax = False
             if ax is None:
-                fig, ax = plt.subplots(figsize=(6, 4))
+                fig, ax = plt.subplots(figsize=figsize)
+                created_ax = True
 
             # Choose label automatically if none given
             if label is None:
                 label = f"Z={selected_Z}"
 
-            ax.plot(centers, F, label=label)
+            ax.plot(centers, F, label=label, **kwargs)
             ax.set_xlabel(rf"$p_{kind[-1]}\ [m_e c]$")
             ax.set_ylabel("Probability density")
             ax.grid(True)
             ax.legend()
 
-            # Only set title if ax was newly created
-            if ax is None:
+            if created_ax:
                 ax.set_title(f"MDF in {kind}")
 
             return ax
@@ -238,27 +229,46 @@ class MDF:
 
             px_edges = np.linspace(px.min(), px.max(), bins + 1)
             py_edges = np.linspace(py.min(), py.max(), bins + 1)
+            p_perp = np.sqrt(px**2 + py**2)
 
-            H, xedges, yedges = np.histogram2d(px, py, bins=[px_edges, py_edges], weights=dP_sel)
+            w = dP_sel.copy()
+            if weight:
+                w = w * p_perp
+
+            H, xedges, yedges = np.histogram2d(px, py, bins=[px_edges, py_edges], weights=w)
 
             if normalize and H.sum() > 0:
                 H = H / H.sum()
 
             extent = [xedges[0], xedges[-1], yedges[0], yedges[-1]]
 
-            if ax is None:
-                fig, ax = plt.subplots(figsize=(6, 5))
-                im = ax.imshow(H.T, origin="lower", extent=extent, aspect="equal", interpolation="nearest", cmap=cmap)
-                cbar = plt.colorbar(im, ax=ax)
-                cbar.set_label("Probability density")
+            # If an axis is given, overlaying multiple 2D plots isn't useful.
+            if ax is not None:
+                raise ValueError("Cannot overlay multiple pxpy plots on the same axes (ax must be None).")
 
-                title_Z = ", ".join(str(z) for z in selected_Z)
-                ax.set_title(f"MDF in $(p_x,p_y)$ for Z={title_Z}")
+            # Create new axes for 2D plot
+            fig, ax = plt.subplots(figsize=figsize)
+
+            # Allow cmap to be overridden via kwargs["cmap"]
+            local_cmap = kwargs.pop("cmap", cmap)
+
+            im = ax.imshow(
+                H.T,
+                origin="lower",
+                extent=extent,
+                aspect="equal",
+                interpolation="nearest",
+                cmap=local_cmap,
+                **kwargs,
+            )
+            cbar = plt.colorbar(im, ax=ax)
+            if weight:
+                cbar.set_label(f"$p\ f(p)$")
             else:
-                # If an axis is given, overlaying multiple 2D plots isn't useful.
-                # Raise an explicit error.
-                raise ValueError("Cannot overlay multiple pxpy plots on same axes.")
+                cbar.set_label(f"$f(p)$")
 
+            title_Z = ", ".join(str(z) for z in selected_Z)
+            ax.set_title(f"MDF in $(p_x,p_y)$ for Z={title_Z}")
             ax.set_xlabel(r"$p_x\ [m_e c]$")
             ax.set_ylabel(r"$p_y\ [m_e c]$")
 
