@@ -45,7 +45,7 @@ class MDF:
             (for GaussianTemporal).
         dt : float, optional
             Time step for the A(t) cache; if None, pulse chooses
-            a default ~ laser period / 150.
+            a default ~ laser period / 300.
         """
         if ion_model is None:
             ion_model = ADKModel()
@@ -146,133 +146,296 @@ class MDF:
     # -----------------------------
     # Plot interface
     # -----------------------------
-    def plot(self, kind: str = "px", levels="all", bins: int = 200, ax=None, cmap: str = "viridis", normalize: bool = False, label: str = None, figsize: tuple = (10, 8), weight: bool = False, **kwargs):
+    def plot(self, kind: str = "px", levels="all", bins: int = 200, normalize: bool = False, label: str = None, figsize=None, **kwargs):
         """
         Plot the MDF in various projections.
 
         Parameters
         ----------
-        kind : {"px", "py", "pz", "pxpy"}
-            - "px": 1D f(p_x)
-            - "py": 1D f(p_y)
-            - "pz": 1D f(p_z)
-            - "pxpy": 2D f(p_x, p_y) as imshow
-        levels : "all", int, or sequence of int
-            Z levels to include.
+        kind : {"px", "py", "pz",
+                "pxpy", "pxpz", "pypx", "pypz", "pzpx", "pzpy"}
+            or sequence of "px","py","pz" for 1D plots.
+
+            1D:
+            - "px":  f(p_x)
+            - "py":  f(p_y)
+            - "pz":  f(p_z)
+            If `kind` is a sequence, e.g. ["px","py","pz"], all requested
+            1D components are plotted on the same axes (using the SAME
+            level selection / group logic described below).
+
+            2D:
+            - "pxpy", "pxpz", "pypx", "pypz", "pzpx", "pzpy"
+            The first component goes on the horizontal axis, the second on
+            the vertical axis. Example:
+                "pxpz":  x-axis = p_x, y-axis = p_z
+                "pzpx":  x-axis = p_z, y-axis = p_x
+
+            2D kinds must be used alone (not in a list with others).
+
+        levels :
+            - "all" → includes all charge states (one group)
+            - int or list/tuple of int → that set of Z (one group)
+            - list/tuple of groups → multiple groups, each rendered as a
+            separate curve in 1D plots. A group can be:
+                "all"
+                int
+                list/tuple of int
+            Example:
+                levels = ["all", 1, 2]
+                → curves for: all Z, Z=1, Z=2
+
+                levels = ["all", [1], [2,3]]
+                → curves for: all Z, Z=1, Z=2–3
+
+            For 2D plots, only a single group is allowed (not a list of groups).
+
         bins : int
             Number of histogram bins.
-        ax : matplotlib Axes, optional
-            If given, plot on this Ax; otherwise create a new figure.
-        cmap : str
-            Default colormap for 2D plots (can be overridden via kwargs["cmap"]).
         normalize : bool
-            Normalize the selected distribution to sum=1?
+            Normalize each group's distribution to sum=1.
         label : str, optional
-            Label for the legend (useful when over-plotting multiple calls).
-        figsize : tuple, optional
-            Figure size used when ax is None (default: (10, 8)).
-        weight : bool
-            If True, weight the histogram by the momentum value (i.e., plot p·f(p)).
+            For the simple case: one 1D kind, one level group.
+            In multi-group mode, automatic labels are generated unless you
+            over-plot manually outside this helper.
+        figsize : tuple or None
+            Figure size for a new figure (passed to plt.subplots).
         **kwargs :
-            Extra keyword arguments passed to:
-              - ax.plot(...) for 1D plots
-              - ax.imshow(...) for 2D plots
+            Axis kwargs (both 1D & 2D):
+                xlim, ylim, xlabel, ylabel, title
+            Additional kwargs (2D only):
+                passed to imshow (cmap, norm, vmin, vmax, interpolation, ...)
         """
 
-        idxs = self._level_indices(levels)
-        selected_Z = [self.Z_list[i] for i in idxs]
+        import numpy as np
+        import matplotlib.pyplot as plt
 
-        # Combined probability weights
-        dP_sel = self.dP_levels[idxs, :].sum(axis=0)
-        if normalize and dP_sel.sum() > 0:
-            dP_sel = dP_sel / dP_sel.sum()
+        # --------------------------------------------------
+        # 1) Normalize "kind" to a list (for 1D case)
+        # --------------------------------------------------
+        if isinstance(kind, (list, tuple)):
+            kinds = list(kind)
+        else:
+            kinds = [kind]
 
-        # -----------------
-        # 1D px/py/pz plots
-        # -----------------
-        if kind in ("px", "py", "pz"):
-            comp = {"px": 0, "py": 1, "pz": 2}[kind]
-            p = self.p_grid[:, comp]
+        valid_1d = {"px", "py", "pz"}
+        valid_2d = {"pxpy", "pxpz", "pypx", "pypz", "pzpx", "pzpy"}
+        valid_all = valid_1d | valid_2d
 
-            pmin, pmax = p.min(), p.max()
-            edges = np.linspace(pmin, pmax, bins + 1)
-            centers = 0.5 * (edges[:-1] + edges[1:])
-            F, _ = np.histogram(p, bins=edges, weights=dP_sel)
+        for k in kinds:
+            if k not in valid_all:
+                raise ValueError(f"Unknown kind={k!r}. " "Use 'px','py','pz' for 1D or one of " "'pxpy','pxpz','pypx','pypz','pzpx','pzpy' for 2D.")
 
-            # --- Create axes if needed ---
-            created_ax = False
-            if ax is None:
-                fig, ax = plt.subplots(figsize=figsize)
-                created_ax = True
+        if len(kinds) > 1 and any(k in valid_2d for k in kinds):
+            raise ValueError("2D (pxpy/pxpz/...) kinds cannot be combined with other kinds.")
 
-            # Choose label automatically if none given
-            if label is None:
-                label = f"Z={selected_Z}"
+        # --------------------------------------------------
+        # 2) Parse levels: detect single-group vs multi-group
+        # --------------------------------------------------
+        def _is_group_spec(obj):
+            """Return True if obj looks like a 'group spec' for levels."""
+            if isinstance(obj, str):
+                return obj == "all"
+            if isinstance(obj, (int, np.integer)):
+                return True
+            if isinstance(obj, (list, tuple)) and all(isinstance(z, (int, np.integer)) for z in obj):
+                return True
+            return False
 
-            ax.plot(centers, F, label=label, **kwargs)
-            ax.set_xlabel(rf"$p_{kind[-1]}\ [m_e c]$")
-            ax.set_ylabel("Probability density")
-            ax.grid(True)
-            ax.legend()
+        # multi-group if: levels is a sequence AND any element itself looks like a group spec
+        multi_group = False
+        level_groups = []
 
-            if created_ax:
-                ax.set_title(f"MDF in {kind}")
+        if isinstance(levels, (list, tuple)):
+            # If this is something like [1,2,3] (plain ints), treat as single group.
+            if all(isinstance(z, (int, np.integer)) for z in levels) and "all" not in levels:
+                # Single group with these Z values
+                level_groups = [levels]
+            else:
+                # This is multi-group: e.g. ["all", 1, 2] or ["all",[1],[2,3]]
+                # Keep the items as separate group specs
+                level_groups = list(levels)
+                multi_group = True
+        else:
+            # Single group (string "all" or int)
+            level_groups = [levels]
 
-            return ax
+        # For 2D plots we only allow a single group
+        if kinds[0] in valid_2d and len(level_groups) > 1:
+            raise ValueError("2D MDF plots (pxpy/pxpz/...) accept only a single 'levels' group.")
 
-        # -----------------
-        # 2D px–py plot
-        # -----------------
-        elif kind == "pxpy":
-            px = self.p_grid[:, 0]
-            py = self.p_grid[:, 1]
+        # Build group index lists and default labels per group
+        group_indices = []
+        group_labels = []
 
-            px_edges = np.linspace(px.min(), px.max(), bins + 1)
-            py_edges = np.linspace(py.min(), py.max(), bins + 1)
-            p_perp = np.sqrt(px**2 + py**2)
+        for g in level_groups:
+            idxs = self._level_indices(g)
+            group_indices.append(idxs)
 
-            w = dP_sel.copy()
-            if weight:
-                w = w * p_perp
+            # Build a default legend label for this group
+            if isinstance(g, str) and g == "all":
+                group_labels.append("all")
+            else:
+                # Translate idxs → actual Z values
+                Zs = [self.Z_list[i] for i in idxs]
+                if len(Zs) == 1:
+                    group_labels.append(f"Z={Zs[0]}")
+                else:
+                    group_labels.append("Z=" + ",".join(str(z) for z in Zs))
 
-            H, xedges, yedges = np.histogram2d(px, py, bins=[px_edges, py_edges], weights=w)
+        # Special case: single group AND a single 1D kind → we allow 'label' override
+        single_group_single_kind = len(level_groups) == 1 and len(kinds) == 1 and kinds[0] in valid_1d
+        if label is not None and single_group_single_kind:
+            group_labels[0] = label
+
+        # --------------------------------------------------
+        # 3) Split axis vs image kwargs
+        # --------------------------------------------------
+        AXIS_KEYS = {"xlim", "ylim", "xlabel", "ylabel", "title"}
+        axis_kwargs = {k: v for k, v in kwargs.items() if k in AXIS_KEYS}
+        other_kwargs = {k: v for k, v in kwargs.items() if k not in AXIS_KEYS}
+
+        # --------------------------------------------------
+        # 4) 2D case (pxpy, pxpz, ...)
+        # --------------------------------------------------
+        if len(kinds) == 1 and kinds[0] in valid_2d:
+            token = kinds[0]
+            comp_x = token[:2]  # e.g. "px"
+            comp_y = token[2:]  # e.g. "py"
+
+            comp_index = {"px": 0, "py": 1, "pz": 2}
+            ix = comp_index[comp_x]
+            iy = comp_index[comp_y]
+
+            # Only one group allowed here
+            idxs = group_indices[0]
+            dP_sel = self.dP_levels[idxs, :].sum(axis=0)
+            if normalize and dP_sel.sum() > 0:
+                dP_sel = dP_sel / dP_sel.sum()
+
+            vx = self.p_grid[:, ix]
+            vy = self.p_grid[:, iy]
+
+            vx_edges = np.linspace(vx.min(), vx.max(), bins + 1)
+            vy_edges = np.linspace(vy.min(), vy.max(), bins + 1)
+
+            H, xedges, yedges = np.histogram2d(vx, vy, bins=[vx_edges, vy_edges], weights=dP_sel)
 
             if normalize and H.sum() > 0:
                 H = H / H.sum()
 
             extent = [xedges[0], xedges[-1], yedges[0], yedges[-1]]
 
-            # If an axis is given, overlaying multiple 2D plots isn't useful.
-            if ax is not None:
-                raise ValueError("Cannot overlay multiple pxpy plots on the same axes (ax must be None).")
-
-            # Create new axes for 2D plot
-            fig, ax = plt.subplots(figsize=figsize)
-
-            # Allow cmap to be overridden via kwargs["cmap"]
-            local_cmap = kwargs.pop("cmap", cmap)
+            if figsize is not None:
+                fig, ax = plt.subplots(figsize=figsize)
+            else:
+                fig, ax = plt.subplots()
 
             im = ax.imshow(
                 H.T,
                 origin="lower",
                 extent=extent,
                 aspect="equal",
-                interpolation="nearest",
-                cmap=local_cmap,
-                **kwargs,
+                **other_kwargs,
             )
+
             cbar = plt.colorbar(im, ax=ax)
-            if weight:
-                cbar.set_label(f"$p\ f(p)$")
-            else:
-                cbar.set_label(f"$f(p)$")
+            cbar.set_label("Probability density")
 
-            title_Z = ", ".join(str(z) for z in selected_Z)
-            ax.set_title(f"MDF in $(p_x,p_y)$ for Z={title_Z}")
-            ax.set_xlabel(r"$p_x\ [m_e c]$")
-            ax.set_ylabel(r"$p_y\ [m_e c]$")
+            xcomp = comp_x[-1]  # 'x','y','z'
+            ycomp = comp_y[-1]
 
+            ax.set_xlabel(axis_kwargs.get("xlabel", rf"$p_{xcomp}\ [m_e c]$"))
+            ax.set_ylabel(axis_kwargs.get("ylabel", rf"$p_{ycomp}\ [m_e c]$"))
+
+            # Build a title including the Z of this group
+            Zs = [self.Z_list[i] for i in group_indices[0]]
+            title_Z = ", ".join(str(z) for z in Zs)
+            x0, y0, z0 = self.r
+            default_title = f"MDF at (x={x0}, y={y0}, z={z0}) for Z={title_Z}"
+            ax.set_title(axis_kwargs.get("title", default_title))
+
+            if "xlim" in axis_kwargs:
+                ax.set_xlim(axis_kwargs["xlim"])
+            if "ylim" in axis_kwargs:
+                ax.set_ylim(axis_kwargs["ylim"])
+
+            plt.show()
             return ax
 
+        # --------------------------------------------------
+        # 5) 1D case: px / py / pz (possibly several kinds)
+        # --------------------------------------------------
+        comp_index = {"px": 0, "py": 1, "pz": 2}
+
+        # Collect full p-ranges over all requested components
+        p_components = {}
+        for k in kinds:
+            if k not in valid_1d:
+                raise ValueError(f"1D plotting supports only {valid_1d}, but got {k!r}.")
+            idx = comp_index[k]
+            p_components[k] = self.p_grid[:, idx]
+
+        pmin = min(p.min() for p in p_components.values())
+        pmax = max(p.max() for p in p_components.values())
+        edges = np.linspace(pmin, pmax, bins + 1)
+        centers = 0.5 * (edges[:-1] + edges[1:])
+
+        if figsize is not None:
+            fig, ax = plt.subplots(figsize=figsize)
         else:
-            raise ValueError(f"Unknown kind={kind!r}. Use 'px', 'py', 'pz', or 'pxpy'.")
+            fig, ax = plt.subplots()
+
+        # For each group and each kind, plot one curve
+        for g_idx, idxs in enumerate(group_indices):
+            dP_g = self.dP_levels[idxs, :].sum(axis=0)
+            if normalize and dP_g.sum() > 0:
+                dP_g = dP_g / dP_g.sum()
+
+            for k in kinds:
+                p = p_components[k]
+                F, _ = np.histogram(p, bins=edges, weights=dP_g)
+
+                if len(level_groups) == 1 and len(kinds) > 1:
+                    # Single level group, multiple kinds → label by kind
+                    curve_label = k
+                elif len(level_groups) > 1 and len(kinds) == 1:
+                    # Multiple level groups, single kind → label by group
+                    curve_label = group_labels[g_idx]
+                elif len(level_groups) == 1 and len(kinds) == 1:
+                    # Single group, single kind: we already handled possible override
+                    curve_label = group_labels[g_idx]
+                else:
+                    # Multiple groups & multiple kinds: label by both
+                    curve_label = f"{group_labels[g_idx]} ({k})"
+
+                ax.plot(centers, F, label=curve_label)
+
+        # Axis labels
+        if len(kinds) == 1:
+            comp = kinds[0][-1]  # 'x','y','z'
+            xlabel_default = rf"$p_{comp}\ [m_e c]$"
+        else:
+            xlabel_default = r"$p\ [m_e c]$"
+
+        ax.set_xlabel(axis_kwargs.get("xlabel", xlabel_default))
+        ax.set_ylabel(axis_kwargs.get("ylabel", "Probability density"))
+        ax.grid(True)
+        ax.legend()
+
+        if "xlim" in axis_kwargs:
+            ax.set_xlim(axis_kwargs["xlim"])
+        if "ylim" in axis_kwargs:
+            ax.set_ylim(axis_kwargs["ylim"])
+
+        if "title" in axis_kwargs:
+            ax.set_title(axis_kwargs["title"])
+        else:
+            x0, y0, z0 = self.r
+            joined_kinds = "/".join(kinds)
+            default_title = f"{joined_kinds} at (x={x0}, y={y0}, z={z0})"
+
+            ax.set_title(axis_kwargs.get("title", default_title))
+
+        plt.show()
+        return ax

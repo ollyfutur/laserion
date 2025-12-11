@@ -203,10 +203,10 @@ class SinglePulse(LaserPulse):
         if t_min is None or t_max is None:
             raise ValueError("t_min and t_max must be provided for non-Gaussian temporal profiles.")
 
-        # --- default dt: laser period / 150 ---
+        # --- default dt: laser period / 300 ---
         if dt is None:
             T_laser = self.wavelength / self.c
-            dt = T_laser / 150.0
+            dt = T_laser / 300.0
 
         # time grid
         n_steps = int(np.ceil((t_max - t_min) / dt)) + 1
@@ -257,110 +257,16 @@ class SinglePulse(LaserPulse):
         interp = self._A_cache["interp"]
         return interp(t)
 
-    def plot(self, component: str, plane: str, *, t: float = 0.0, x: float = 0.0, y: float = 0.0, z: float = 0.0, xrange=(-5.0, 5.0), yrange=(-5.0, 5.0), N: int = 400, r_for_A=None, cmap: str = "viridis", figsize: tuple = (10, 8), **kwargs):
-        """
-        Plot electric or vector potential field components for a SinglePulse.
-
-        The signature is made uniform with MultiPulse.plot, but:
-        - show_total is kept for API compatibility (it just controls whether
-          the single pulse is plotted).
-        - show_pulses / labels have no effect and will raise if misused.
-        """
-
-        # ---------- Determine if E or A ----------
-        if component.startswith("E"):
-            field_fn = lambda tt, rr: self.E(tt, rr)
-            idx = {"Ex": 0, "Ey": 1, "Ez": 2}[component]
-        elif component.startswith("A"):
-            rr_cache = np.array([x, y, z]) if r_for_A is None else np.asarray(r_for_A)
-            self.build_A_cache(rr_cache)
-            field_fn = lambda tt, rr: self.A(tt, rr_cache)
-            idx = {"Ax": 0, "Ay": 1, "Az": 2}[component]
-        else:
-            raise ValueError("component must be one of Ex,Ey,Ez,Ax,Ay,Az")
-
-        # =================================================
-        #            1D plots: "t", "x", "y", "z"
-        # =================================================
-        if plane in ("t", "x", "y", "z"):
-            var = np.linspace(*xrange, N)
-            vals = np.zeros_like(var)
-
-            if plane == "t":
-                r_vec = np.array([x, y, z], dtype=float)
-                for i, tt in enumerate(var):
-                    vals[i] = field_fn(tt, r_vec)[idx]
-                xlabel = "t [fs]"
-            else:
-                axis_map = {"x": 0, "y": 1, "z": 2}
-                ax_idx = axis_map[plane]
-                r0 = np.array([x, y, z], dtype=float)
-
-                for i, coord in enumerate(var):
-                    r_vec = r0.copy()
-                    r_vec[ax_idx] = coord
-                    vals[i] = field_fn(t, r_vec)[idx]
-
-                xlabel = f"{plane} [µm]"
-
-            fig, ax = plt.subplots(figsize=figsize)
-            ax.plot(var, vals, **kwargs)
-            ax.set_title(f"{component} vs {plane}")
-            ax.set_xlabel(xlabel)
-            ax.set_ylabel(component)
-            ax.grid(True)
-            plt.show()
-            return
-
-        # =================================================
-        #      2D MAPS: "xy", "yx", "xz", "zx", "yz", "zy"
-        # =================================================
-        if len(plane) != 2 or any(ax not in "xyz" for ax in plane):
-            raise ValueError("plane must be 't','x','y','z' or any 2-letter combo of 'x','y','z' " "(e.g. 'xy','xz','yz','zx','yx','zy').")
-
-        axis_map = {"x": 0, "y": 1, "z": 2}
-        ax1 = axis_map[plane[0]]  # horizontal
-        ax2 = axis_map[plane[1]]  # vertical
-
-        r0 = np.array([x, y, z], dtype=float)
-
-        X = np.linspace(*xrange, N)
-        Y = np.linspace(*yrange, N)
-        XX, YY = np.meshgrid(X, Y)
-
-        vals = np.zeros_like(XX)
-        for i in range(N):
-            for j in range(N):
-                r_vec = r0.copy()
-                r_vec[ax1] = XX[i, j]
-                r_vec[ax2] = YY[i, j]
-                vals[i, j] = field_fn(t, r_vec)[idx]
-
-        # allow user to override cmap via kwargs, but keep a default
-        if "cmap" not in kwargs:
-            kwargs["cmap"] = cmap
-
-        plt.figure(figsize=figsize)
-        im = plt.imshow(
-            vals,
-            extent=(xrange[0], xrange[1], yrange[0], yrange[1]),
-            origin="lower",
-            aspect="auto",
-            **kwargs,
-        )
-        plt.colorbar(im, label=component)
-        plt.title(f"{component} in {plane}-plane at t={t}")
-        plt.xlabel(plane[0] + " [µm]")
-        plt.ylabel(plane[1] + " [µm]")
-        plt.show()
-
+    def plot(self, component, plane: str, *, t: float = 0.0, x: float = 0.0, y: float = 0.0, z: float = 0.0, xrange=(-5.0, 5.0), yrange=(-5.0, 5.0), N: int = 400, r_for_A=None, figsize=None, **kwargs):
         """
         Plot electric or vector potential field components.
 
         Parameters
         ----------
-        component : str
-            One of "Ex","Ey","Ez","Ax","Ay","Az".
+        component : str or sequence of str
+            One or several of "Ex","Ey","Ez","Ax","Ay","Az".
+            For 1D planes, multiple components are overlaid on the same axes.
+            For 2D planes, exactly one component must be given.
         plane : str
             1D:
                 "t"  → component vs t (x,y,z fixed)
@@ -380,77 +286,175 @@ class SinglePulse(LaserPulse):
         r_for_A : ndarray or None
             Position where A(t,r) has been cached. If None and A is requested,
             A is cached at (x,y,z).
+        figsize : tuple or None
+            Figure size passed to plt.subplots / plt.figure.
+            If None, matplotlib rcParams["figure.figsize"] is used.
+        **kwargs :
+            Extra keyword arguments:
+            - for 1D: applied to the line plots (color, linestyle, ...) and to
+                    the Axes via keys xlim, ylim, xlabel, ylabel, title
+            - for 2D: split into axis kwargs (xlim, ylim, xlabel, ylabel, title)
+                    and image kwargs passed to imshow (cmap, norm, etc.).
         """
 
-        # ---------- Determine if E or A ----------
-        if component.startswith("E"):
-            field_fn = lambda tt, rr: self.E(tt, rr)
-            idx = {"Ex": 0, "Ey": 1, "Ez": 2}[component]
-        elif component.startswith("A"):
-            # For A, our implementation assumes A is precomputed at a single r.
-            rr_cache = np.array([x, y, z]) if r_for_A is None else np.asarray(r_for_A)
-            self.build_A_cache(rr_cache)
-            field_fn = lambda tt, rr: self.A(tt, rr_cache)
-            idx = {"Ax": 0, "Ay": 1, "Az": 2}[component]
+        # Normalize component to a list
+        if isinstance(component, str):
+            components = [component]
         else:
-            raise ValueError("component must be one of Ex,Ey,Ez,Ax,Ay,Az")
+            components = list(component)
+
+        valid_components = {"Ex", "Ey", "Ez", "Ax", "Ay", "Az"}
+        for c in components:
+            if c not in valid_components:
+                raise ValueError(f"Unknown component {c!r}. Must be one of {sorted(valid_components)}.")
+
+        # Helper: axis kwargs (for Axes methods) vs others
+        AXIS_KEYS = {"xlim", "ylim", "xlabel", "ylabel", "title"}
+
+        def split_kwargs(all_kwargs):
+            axis_kwargs = {k: v for k, v in all_kwargs.items() if k in AXIS_KEYS}
+            other_kwargs = {k: v for k, v in all_kwargs.items() if k not in AXIS_KEYS}
+            return axis_kwargs, other_kwargs
+
+        r0 = np.array([x, y, z], dtype=float)
+        axis_map = {"x": 0, "y": 1, "z": 2}
 
         # =================================================
         #            1D plots: "t", "x", "y", "z"
         # =================================================
         if plane in ("t", "x", "y", "z"):
-            # variable axis grid always taken from xrange
             var = np.linspace(*xrange, N)
-            vals = np.zeros_like(var)
+            axis_kwargs, line_kwargs = split_kwargs(kwargs)
+
+            # figure and axis
+            if figsize is not None:
+                fig, ax = plt.subplots(figsize=figsize)
+            else:
+                fig, ax = plt.subplots()
 
             if plane == "t":
-                # vary time, keep spatial position fixed
-                r_vec = np.array([x, y, z], dtype=float)
-                for i, tt in enumerate(var):
-                    vals[i] = field_fn(tt, r_vec)[idx]
-                xlabel = "t [fs]"
+                xlabel_default = "t [fs]"
             else:
-                # vary one spatial coordinate, keep t and others fixed
-                axis_map = {"x": 0, "y": 1, "z": 2}
-                ax_idx = axis_map[plane]
-                r0 = np.array([x, y, z], dtype=float)
+                xlabel_default = f"{plane} [µm]"
 
-                for i, coord in enumerate(var):
-                    r_vec = r0.copy()
-                    r_vec[ax_idx] = coord
-                    vals[i] = field_fn(t, r_vec)[idx]
+            # Loop over each requested component and plot sequentially
+            for comp in components:
+                if comp.startswith("E"):
+                    idx_map = {"Ex": 0, "Ey": 1, "Ez": 2}
+                    idx = idx_map[comp]
 
-                xlabel = f"{plane} [µm]"
+                    if plane == "t":
+                        # vary time, position fixed
+                        vals = np.zeros_like(var)
+                        for i, tt in enumerate(var):
+                            vals[i] = self.E(tt, r0)[idx]
+                    else:
+                        # vary one spatial coordinate, keep t fixed
+                        ax_idx = axis_map[plane]
+                        vals = np.zeros_like(var)
+                        for i, coord in enumerate(var):
+                            r_vec = r0.copy()
+                            r_vec[ax_idx] = coord
+                            vals[i] = self.E(t, r_vec)[idx]
 
-            plt.figure(figsize=(7, 4))
-            plt.plot(var, vals, **kwargs)
-            plt.title(f"{component} vs {plane}")
-            plt.xlabel(xlabel)
-            plt.ylabel(component)
-            plt.grid(True)
+                elif comp.startswith("A"):
+                    idx_map = {"Ax": 0, "Ay": 1, "Az": 2}
+                    idx = idx_map[comp]
+
+                    rr_cache = np.array([x, y, z]) if r_for_A is None else np.asarray(r_for_A)
+                    # Build cache (no-op if already built for this r)
+                    self.build_A_cache(rr_cache)
+
+                    if plane == "t":
+                        vals = np.zeros_like(var)
+                        for i, tt in enumerate(var):
+                            vals[i] = self.A(tt, rr_cache)[idx]
+                    else:
+                        ax_idx = axis_map[plane]
+                        vals = np.zeros_like(var)
+                        for i, coord in enumerate(var):
+                            r_vec = rr_cache.copy()
+                            r_vec[ax_idx] = coord
+                            vals[i] = self.A(t, r_vec)[idx]
+
+                else:
+                    raise ValueError("component must be one of Ex,Ey,Ez,Ax,Ay,Az")
+
+                # Plot this component
+                ax.plot(var, vals, label=comp, **line_kwargs)
+
+            # Labels, grid, title, limits
+            ax.set_xlabel(axis_kwargs.get("xlabel", xlabel_default))
+            # If only one component, default ylabel is that component; else generic
+            if len(components) == 1:
+                default_ylabel = components[0]
+            else:
+                default_ylabel = ""
+            ax.set_ylabel(axis_kwargs.get("ylabel", default_ylabel))
+            ax.grid(True)
+
+            if len(components) > 1:
+                ax.legend()
+
+            if "xlim" in axis_kwargs:
+                ax.set_xlim(axis_kwargs["xlim"])
+            if "ylim" in axis_kwargs:
+                ax.set_ylim(axis_kwargs["ylim"])
+
+            if "title" in axis_kwargs:
+                ax.set_title(axis_kwargs["title"])
+            else:
+                if plane == "t":
+                    # fields vs time at fixed (x,y,z)
+                    title_str = f"(x={x}, y={y}, z={z})"
+                else:
+                    # fields vs spatial coordinate at fixed time
+                    # e.g. Ex vs x at (y=0,z=0) and t = 120 fs
+                    other_coords = {"x": (y, z), "y": (x, z), "z": (x, y)}
+                    # pick the two remaining coordinates
+                    if plane == "x":
+                        title_str = f"(y={y}, z={z}, t={t})"
+                    elif plane == "y":
+                        title_str = f"(x={x}, z={z}, t={t})"
+                    else:  # plane == "z"
+                        title_str = f"(x={x}, y={y}, t={t})"
+            ax.set_title(title_str)
             plt.show()
-            return
+            return ax
 
         # =================================================
         #      2D MAPS: "xy", "yx", "xz", "zx", "yz", "zy"
         # =================================================
-        if len(plane) != 2 or any(ax not in "xyz" for ax in plane):
+        if len(plane) != 2 or any(ax_c not in "xyz" for ax_c in plane):
             raise ValueError("plane must be 't','x','y','z' or any 2-letter combo of 'x','y','z' " "(e.g. 'xy','xz','yz','zx','yx','zy').")
 
-        # map 'x','y','z' → index 0,1,2
-        axis_map = {"x": 0, "y": 1, "z": 2}
-        ax1 = axis_map[plane[0]]  # horizontal axis
-        ax2 = axis_map[plane[1]]  # vertical axis
+        if len(components) != 1:
+            raise ValueError("2D plots currently support a single component only.")
 
-        # base position r0: start from given (x,y,z)
-        r0 = np.array([x, y, z], dtype=float)
+        comp = components[0]
+        axis_kwargs, img_kwargs = split_kwargs(kwargs)
 
-        # set up coordinate ranges for the two varying axes
-        X = np.linspace(*xrange, N)  # horizontal
-        Y = np.linspace(*yrange, N)  # vertical
+        # Determine which field to sample
+        if comp.startswith("E"):
+            idx_map = {"Ex": 0, "Ey": 1, "Ez": 2}
+            idx = idx_map[comp]
+            field_fn = lambda tt, rr: self.E(tt, rr)
+        elif comp.startswith("A"):
+            idx_map = {"Ax": 0, "Ay": 1, "Az": 2}
+            idx = idx_map[comp]
+            rr_cache = np.array([x, y, z]) if r_for_A is None else np.asarray(r_for_A)
+            self.build_A_cache(rr_cache)
+            field_fn = lambda tt, rr: self.A(tt, rr)
+        else:
+            raise ValueError("component must be one of Ex,Ey,Ez,Ax,Ay,Az")
+
+        ax1 = axis_map[plane[0]]  # horizontal
+        ax2 = axis_map[plane[1]]  # vertical
+
+        X = np.linspace(*xrange, N)
+        Y = np.linspace(*yrange, N)
         XX, YY = np.meshgrid(X, Y)
 
-        # build field map
         vals = np.zeros_like(XX)
         for i in range(N):
             for j in range(N):
@@ -459,12 +463,33 @@ class SinglePulse(LaserPulse):
                 r_vec[ax2] = YY[i, j]
                 vals[i, j] = field_fn(t, r_vec)[idx]
 
-        plt.figure(figsize=(7, 6))
-        im = plt.imshow(vals, extent=(xrange[0], xrange[1], yrange[0], yrange[1]), origin="lower", aspect="auto", **kwargs)
-        plt.colorbar(im, label=component)
-        plt.title(f"{component} in {plane}-plane at t={t}")
-        plt.xlabel(plane[0] + " [µm]")
-        plt.ylabel(plane[1] + " [µm]")
+        if figsize is not None:
+            fig, ax2d = plt.subplots(figsize=figsize)
+        else:
+            fig, ax2d = plt.subplots()
+
+        im = ax2d.imshow(
+            vals,
+            extent=(xrange[0], xrange[1], yrange[0], yrange[1]),
+            origin="lower",
+            aspect="auto",
+            **img_kwargs,
+        )
+        plt.colorbar(im, label=comp)
+
+        ax2d.set_xlabel(axis_kwargs.get("xlabel", plane[0] + " [µm]"))
+        ax2d.set_ylabel(axis_kwargs.get("ylabel", plane[1] + " [µm]"))
+
+        if "xlim" in axis_kwargs:
+            ax2d.set_xlim(axis_kwargs["xlim"])
+        if "ylim" in axis_kwargs:
+            ax2d.set_ylim(axis_kwargs["ylim"])
+
+        if "title" in axis_kwargs:
+            ax2d.set_title(axis_kwargs["title"])
+        else:
+            ax2d.set_title(f"{comp} in {plane}-plane at t={t}")
+
         plt.show()
 
 
@@ -510,7 +535,7 @@ class MultiPulse(LaserPulse):
 
     # ---------- A cache construction ----------
 
-    def build_A_cache(self, r, t_min=None, t_max=None, dt=None, envelope_cut=1e-6):
+    def build_A_cache(self, r, t_min=None, t_max=None, dt=None, envelope_cut=1e-8):
         """
         Precompute A_total(t, r) = -∫ E_total(t', r) dt' on a time grid,
         and store an interpolator for later calls to A(t, r).
@@ -552,7 +577,7 @@ class MultiPulse(LaserPulse):
         if t_min is None or t_max is None:
             raise ValueError("t_min and t_max must be provided if not all sub-pulses use GaussianTemporal.")
 
-        # --- default dt: use smallest wavelength among pulses, period/150 ---
+        # --- default dt: use smallest wavelength among pulses, period/300 ---
         if dt is None:
             lambdas = []
             for p in self.pulses:
@@ -562,7 +587,7 @@ class MultiPulse(LaserPulse):
                 raise ValueError("dt must be provided if sub-pulses lack 'wavelength' attribute.")
             lambda_min = min(lambdas)
             T_min = lambda_min / self.c
-            dt = T_min / 150.0
+            dt = T_min / 300.0
 
         # time grid
         n_steps = int(np.ceil((t_max - t_min) / dt)) + 1
@@ -612,14 +637,17 @@ class MultiPulse(LaserPulse):
     # ===============================
     #      Plotting Interface
     # ===============================
-    def plot(self, component: str, plane: str, *, t: float = 0.0, x: float = 0.0, y: float = 0.0, z: float = 0.0, xrange=(-5.0, 5.0), yrange=(-5.0, 5.0), N: int = 400, r_for_A=None, show_total: bool = True, show_pulses: bool = False, labels: Optional[Sequence[str]] = None, cmap: str = "viridis", figsize: tuple = (10, 8), **kwargs):
+    def plot(self, component, plane: str, *, t: float = 0.0, x: float = 0.0, y: float = 0.0, z: float = 0.0, xrange=(-5.0, 5.0), yrange=(-5.0, 5.0), N: int = 400, r_for_A=None, show_total: bool = True, show_pulses: bool = False, labels: Optional[Sequence[str]] = None, figsize=None, **kwargs):
         """
         Plot electric or vector potential field components for a MultiPulse.
 
         Parameters
         ----------
-        component : str
-            One of "Ex","Ey","Ez","Ax","Ay","Az".
+        component : str or sequence of str
+            One or several of "Ex","Ey","Ez","Ax","Ay","Az".
+            For 1D planes, multiple components are overlaid on the same axes.
+            For 2D planes, exactly one component must be given.
+            All components in a single call must be of the same type (all E* or all A*).
         plane : str
             1D:
                 "t"  → vs t (x,y,z fixed)
@@ -642,28 +670,60 @@ class MultiPulse(LaserPulse):
         show_total : bool
             If True, plot the total field (sum of all pulses).
         show_pulses : bool
-            If True, also plot individual sub-pulse contributions (1D only).
+            If True (1D only), also plot individual sub-pulse contributions.
         labels : sequence of str, optional
             Labels for each sub-pulse when show_pulses=True.
             If None, labels like "pulse 0", "pulse 1", ... are used.
-        cmap : str
-            Default colormap for 2D plots (can be overridden via kwargs).
+        figsize : tuple or None
+            Figure size passed to plt.subplots / plt.figure.
+            If None, matplotlib rcParams["figure.figsize"] is used.
+        **kwargs :
+            Extra keyword arguments:
+            - for 1D: applied to the line plots (color, linestyle, ...) and to
+                    the Axes via keys xlim, ylim, xlabel, ylabel, title
+            - for 2D: split into axis kwargs (xlim, ylim, xlabel, ylabel, title)
+                    and image kwargs passed to imshow (cmap, norm, etc.).
         """
 
-        # ---------- E vs A selection ----------
-        if component.startswith("E"):
-            total_field_fn = lambda tt, rr: self.E(tt, rr)
-            idx = {"Ex": 0, "Ey": 1, "Ez": 2}[component]
+        # Normalize component(s) to a list
+        if isinstance(component, str):
+            components = [component]
+        else:
+            components = list(component)
 
+        valid_components = {"Ex", "Ey", "Ez", "Ax", "Ay", "Az"}
+        for c in components:
+            if c not in valid_components:
+                raise ValueError(f"Unknown component {c!r}. Must be one of {sorted(valid_components)}.")
+
+        # Ensure all components are either all E* or all A*
+        prefixes = {c[0] for c in components}
+        if len(prefixes) != 1:
+            raise ValueError("All components in a single MultiPulse.plot call must be of the same type " "(all starting with 'E' or all starting with 'A').")
+        prefix = prefixes.pop()  # 'E' or 'A'
+
+        # ---------- Prepare total and per-pulse field functions ----------
+        r0 = np.array([x, y, z], dtype=float)
+        axis_map = {"x": 0, "y": 1, "z": 2}
+
+        if prefix == "E":
+            # total E
+            def total_field_fn(tt, rr):
+                return self.E(tt, rr)
+
+            # per-pulse E
             pulse_field_fns = [lambda tt, rr, p=p: p.E(tt, rr) for p in self.pulses]
 
-        elif component.startswith("A"):
+        else:  # prefix == "A"
             rr_cache = np.array([x, y, z]) if r_for_A is None else np.asarray(r_for_A)
-
+            # Build cache for total A
             self.build_A_cache(rr_cache)
-            total_field_fn = lambda tt, rr: self.A(tt, rr_cache)
-            idx = {"Ax": 0, "Ay": 1, "Az": 2}[component]
 
+            def total_field_fn(tt, rr):
+                # A uses cached r; rr is ignored
+                return self.A(tt, rr_cache)
+
+            # per-pulse A: ensure each has cache at the same rr_cache
             pulse_field_fns = []
             for p in self.pulses:
                 if hasattr(p, "build_A_cache"):
@@ -671,76 +731,156 @@ class MultiPulse(LaserPulse):
                     pulse_field_fns.append(lambda tt, rr, pp=p: pp.A(tt, rr_cache))
                 else:
                     pulse_field_fns.append(lambda tt, rr: np.zeros(3))
-        else:
-            raise ValueError("component must be one of Ex,Ey,Ez,Ax,Ay,Az")
+
+        # Split kwargs: axis vs others
+        AXIS_KEYS = {"xlim", "ylim", "xlabel", "ylabel", "title"}
+
+        def split_kwargs(all_kwargs):
+            axis_kwargs = {k: v for k, v in all_kwargs.items() if k in AXIS_KEYS}
+            other_kwargs = {k: v for k, v in all_kwargs.items() if k not in AXIS_KEYS}
+            return axis_kwargs, other_kwargs
 
         # =================================================
         #            1D plots: "t", "x", "y", "z"
         # =================================================
         if plane in ("t", "x", "y", "z"):
             var = np.linspace(*xrange, N)
-            total_vals = np.zeros_like(var)
+            axis_kwargs, line_kwargs = split_kwargs(kwargs)
 
-            r0 = np.array([x, y, z], dtype=float)
-            axis_map = {"x": 0, "y": 1, "z": 2}
+            # figure and axis
+            if figsize is not None:
+                fig, ax = plt.subplots(figsize=figsize)
+            else:
+                fig, ax = plt.subplots()
 
             if plane == "t":
-                for i, tt in enumerate(var):
-                    total_vals[i] = total_field_fn(tt, r0)[idx]
+                xlabel_default = "t [fs]"
             else:
-                ax_idx = axis_map[plane]
-                for i, coord in enumerate(var):
-                    r_vec = r0.copy()
-                    r_vec[ax_idx] = coord
-                    total_vals[i] = total_field_fn(t, r_vec)[idx]
+                xlabel_default = f"{plane} [µm]"
 
-            fig, ax = plt.subplots(figsize=figsize)
-
-            if show_total:
-                ax.plot(var, total_vals, label="total", **kwargs)
-
+            # sanity check for labels if show_pulses
             if show_pulses:
                 if labels is not None and len(labels) != len(self.pulses):
                     raise ValueError("labels length must match number of pulses.")
 
-                for k, f_pulse in enumerate(pulse_field_fns):
-                    pulse_vals = np.zeros_like(var)
-                    if plane == "t":
-                        for i, tt in enumerate(var):
-                            pulse_vals[i] = f_pulse(tt, r0)[idx]
-                    else:
-                        ax_idx = axis_map[plane]
-                        for i, coord in enumerate(var):
-                            r_vec = r0.copy()
-                            r_vec[ax_idx] = coord
-                            pulse_vals[i] = f_pulse(t, r_vec)[idx]
+            # Loop over each requested component and plot sequentially
+            for comp in components:
+                if comp.startswith("E"):
+                    idx_map = {"Ex": 0, "Ey": 1, "Ez": 2}
+                else:
+                    idx_map = {"Ax": 0, "Ay": 1, "Az": 2}
+                idx = idx_map[comp]
 
-                    lab = labels[k] if labels is not None else f"pulse {k}"
-                    ax.plot(var, pulse_vals, "--", label=lab, **kwargs)
+                # --- total field for this component ---
+                vals_total = np.zeros_like(var)
+                if plane == "t":
+                    # vary time, position fixed
+                    for i, tt in enumerate(var):
+                        vals_total[i] = total_field_fn(tt, r0)[idx]
+                else:
+                    # vary one spatial coordinate, keep t fixed
+                    ax_idx = axis_map[plane]
+                    for i, coord in enumerate(var):
+                        r_vec = r0.copy()
+                        r_vec[ax_idx] = coord
+                        vals_total[i] = total_field_fn(t, r_vec)[idx]
 
-            xlabel = "t [fs]" if plane == "t" else f"{plane} [µm]"
-            ax.set_xlabel(xlabel)
-            ax.set_ylabel(component)
+                if show_total:
+                    ax.plot(var, vals_total, label=f"{comp} (total)", **line_kwargs)
+
+                # --- per-pulse contributions for this component ---
+                if show_pulses:
+                    for k, f_pulse in enumerate(pulse_field_fns):
+                        vals_pulse = np.zeros_like(var)
+                        if plane == "t":
+                            for i, tt in enumerate(var):
+                                vals_pulse[i] = f_pulse(tt, r0)[idx]
+                        else:
+                            ax_idx = axis_map[plane]
+                            for i, coord in enumerate(var):
+                                r_vec = r0.copy()
+                                r_vec[ax_idx] = coord
+                                vals_pulse[i] = f_pulse(t, r_vec)[idx]
+
+                        base_label = labels[k] if labels is not None else f"pulse {k}"
+                        lab = f"{base_label} ({comp})"
+                        ax.plot(var, vals_pulse, "--", label=lab, **line_kwargs)
+
+            # Labels, grid, limits, title
+            ax.set_xlabel(axis_kwargs.get("xlabel", xlabel_default))
+
+            if len(components) == 1:
+                default_ylabel = components[0]
+            else:
+                default_ylabel = ""
+            ax.set_ylabel(axis_kwargs.get("ylabel", default_ylabel))
+
             ax.grid(True)
-            ax.legend()
-            ax.set_title(f"{component} vs {plane}")
+
+            if show_total or show_pulses or len(components) > 1:
+                ax.legend()
+
+            if "xlim" in axis_kwargs:
+                ax.set_xlim(axis_kwargs["xlim"])
+            if "ylim" in axis_kwargs:
+                ax.set_ylim(axis_kwargs["ylim"])
+
+            if "title" in axis_kwargs:
+                ax.set_title(axis_kwargs["title"])
+            else:
+                if plane == "t":
+                    # fields vs time at fixed (x,y,z)
+                    title_str = f"(x={x}, y={y}, z={z})"
+                else:
+                    # fields vs spatial coordinate at fixed time
+                    if plane == "x":
+                        title_str = f"(y={y}, z={z}, t={t})"
+                    elif plane == "y":
+                        title_str = f"(x={x}, z={z}, t={t})"
+                    else:  # plane == "z"
+                        title_str = f"(x={x}, y={y}, t={t})"
+                ax.set_title(title_str)
+
             plt.show()
-            return
+            return ax
 
         # =================================================
         #      2D MAPS: "xy", "yx", "xz", "zx", "yz", "zy"
         # =================================================
-        if len(plane) != 2 or any(ax not in "xyz" for ax in plane):
+        if len(plane) != 2 or any(ax_c not in "xyz" for ax_c in plane):
             raise ValueError("plane must be 't','x','y','z' or any 2-letter combo of 'x','y','z' " "(e.g. 'xy','xz','yz','zx','yx','zy').")
+
+        if len(components) != 1:
+            raise ValueError("2D plots currently support a single component only.")
 
         if show_pulses:
             raise ValueError("show_pulses=True is not supported for 2D plots.")
 
-        axis_map = {"x": 0, "y": 1, "z": 2}
-        ax1 = axis_map[plane[0]]
-        ax2 = axis_map[plane[1]]
+        comp2d = components[0]
+        axis_kwargs, im_kwargs = split_kwargs(kwargs)
 
-        r0 = np.array([x, y, z], dtype=float)
+        # index selection for this component
+        if comp2d.startswith("E"):
+            idx_map = {"Ex": 0, "Ey": 1, "Ez": 2}
+            idx = idx_map[comp2d]
+
+            def field_fn_2d(tt, rr):
+                return self.E(tt, rr)
+
+        else:  # A*
+            idx_map = {"Ax": 0, "Ay": 1, "Az": 2}
+            idx = idx_map[comp2d]
+
+            rr_cache = np.array([x, y, z]) if r_for_A is None else np.asarray(r_for_A)
+            self.build_A_cache(rr_cache)
+
+            def field_fn_2d(tt, rr):
+                # A uses cached r; rr is ignored
+                return self.A(tt, rr_cache)
+
+        axis_map = {"x": 0, "y": 1, "z": 2}
+        ax1 = axis_map[plane[0]]  # horizontal
+        ax2 = axis_map[plane[1]]  # vertical
 
         X = np.linspace(*xrange, N)
         Y = np.linspace(*yrange, N)
@@ -752,15 +892,34 @@ class MultiPulse(LaserPulse):
                 r_vec = r0.copy()
                 r_vec[ax1] = XX[i, j]
                 r_vec[ax2] = YY[i, j]
-                vals[i, j] = total_field_fn(t, r_vec)[idx]
+                vals[i, j] = field_fn_2d(t, r_vec)[idx]
 
-        if "cmap" not in kwargs:
-            kwargs["cmap"] = cmap
+        if figsize is not None:
+            fig, ax2d = plt.subplots(figsize=figsize)
+        else:
+            fig, ax2d = plt.subplots()
 
-        plt.figure(figsize=figsize)
-        im = plt.imshow(vals, extent=(xrange[0], xrange[1], yrange[0], yrange[1]), origin="lower", aspect="auto", **kwargs)
-        plt.colorbar(im, label=component)
-        plt.title(f"{component} in {plane}-plane at t={t}")
-        plt.xlabel(plane[0] + " [µm]")
-        plt.ylabel(plane[1] + " [µm]")
+        im = ax2d.imshow(
+            vals,
+            extent=(xrange[0], xrange[1], yrange[0], yrange[1]),
+            origin="lower",
+            aspect="auto",
+            **im_kwargs,
+        )
+        plt.colorbar(im, ax=ax2d, label=comp2d)
+
+        ax2d.set_xlabel(axis_kwargs.get("xlabel", plane[0] + " [µm]"))
+        ax2d.set_ylabel(axis_kwargs.get("ylabel", plane[1] + " [µm]"))
+
+        if "xlim" in axis_kwargs:
+            ax2d.set_xlim(axis_kwargs["xlim"])
+        if "ylim" in axis_kwargs:
+            ax2d.set_ylim(axis_kwargs["ylim"])
+
+        if "title" in axis_kwargs:
+            ax2d.set_title(axis_kwargs["title"])
+        else:
+            ax2d.set_title(f"{comp2d} in {plane}-plane at t={t}")
+
         plt.show()
+        return ax2d

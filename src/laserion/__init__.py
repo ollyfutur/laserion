@@ -12,6 +12,10 @@ from .ionization import ion_data, ADKModel
 
 from .mdf import MDF
 
+from .plotstyle import std_plot
+
+std_plot()  # ← style loaded automatically at import
+
 __all__ = [
     "LaserPulse",
     "TransverseProfile",
