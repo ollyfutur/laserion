@@ -13,24 +13,30 @@ The workflow is:
 
 From the project root:
 
+```bash
 cd csrc
 make clean
 make
 cd ..
+```
 
 This produces the executable:
 
+```bash
 csrc/bin/test_temporal
+```
 
 ## Run the comparison
 
 Ensure Python imports the local `laserion` sources:
 
-export PYTHONPATH=$PWD/src
+`export PYTHONPATH=$PWD/src`
 
 Run:
 
-python3 tests/compare_temporal.py --tau 60 --tmin -200 --tmax 200 --dt 0.5 --c-exe csrc/bin/test_temporal
+```bash
+python3 tests/compare_temporal.py --tau 60 --tmin -200 --tmax 200 --dt 0.5 --c-exe csrc/bin/test_temporal`
+```
 
 The script reports:
 - number of points
@@ -42,7 +48,9 @@ Exit code is 0 on success, 1 on failure.
 
 ## Plot C vs Python (optional)
 
+```bash
 python3 tests/compare_temporal.py --tau 60 --tmin -200 --tmax 200 --dt 0.5 --c-exe csrc/bin/test_temporal --plot
+```
 
 A figure appears with:
 - solid line: Python result
