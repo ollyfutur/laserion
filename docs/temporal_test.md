@@ -30,7 +30,9 @@ csrc/bin/test_temporal
 
 Ensure Python imports the local `laserion` sources:
 
-`export PYTHONPATH=$PWD/src`
+```bash
+export PYTHONPATH=$PWD/src
+```
 
 Run:
 
