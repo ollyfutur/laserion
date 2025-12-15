@@ -37,7 +37,7 @@ export PYTHONPATH=$PWD/src
 Run:
 
 ```bash
-python3 tests/compare_temporal.py --tau 60 --tmin -200 --tmax 200 --dt 0.5 --c-exe csrc/bin/test_temporal`
+python3 tests/compare_temporal.py --tau 60 --tmin -200 --tmax 200 --dt 0.5 --c-exe csrc/bin/test_temporal
 ```
 
 The script reports:
