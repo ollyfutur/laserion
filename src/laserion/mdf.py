@@ -294,6 +294,15 @@ class MDF:
         AXIS_KEYS = {"xlim", "ylim", "xlabel", "ylabel", "title"}
         axis_kwargs = {k: v for k, v in kwargs.items() if k in AXIS_KEYS}
         other_kwargs = {k: v for k, v in kwargs.items() if k not in AXIS_KEYS}
+        # --- imshow defaults that user can override via kwargs ---
+        imshow_defaults = {
+            "extent": None,  # filled later when known
+            "aspect": "auto",
+        }
+
+        # User overrides (if present) should win
+        user_extent = other_kwargs.pop("extent", None)
+        user_aspect = other_kwargs.pop("aspect", None)
 
         # --------------------------------------------------
         # 4) 2D case (pxpy, pxpz, ...)
@@ -331,11 +340,14 @@ class MDF:
             else:
                 fig, ax = plt.subplots()
 
+            extent_to_use = extent if user_extent is None else user_extent
+            aspect_to_use = imshow_defaults["aspect"] if user_aspect is None else user_aspect
+
             im = ax.imshow(
                 H.T,
                 origin="lower",
-                extent=extent,
-                aspect="equal",
+                extent=extent_to_use,
+                aspect=aspect_to_use,
                 **other_kwargs,
             )
 
