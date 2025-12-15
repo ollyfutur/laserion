@@ -1,6 +1,9 @@
 .DS_Store
 __pycache__/
 _lase*
+csrc/bin/
+csrc/build/
+csrc/tests/_out/
 *.pyc
 *.pyo
 *.pyd
