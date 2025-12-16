@@ -16,13 +16,11 @@ static void gaussian_temporal_destroy(TemporalProfile *base)
 }
 
 static const TemporalProfileVTable GAUSSIAN_TEMPORAL_VTABLE = {
-    .eval    = gaussian_temporal_eval,
-    .destroy = gaussian_temporal_destroy
-};
+    .eval = gaussian_temporal_eval,
+    .destroy = gaussian_temporal_destroy};
 
 void GaussianTemporal_init(GaussianTemporal *g, double tau_fs)
 {
     g->base.vt = &GAUSSIAN_TEMPORAL_VTABLE;
-    g->tau_fs  = tau_fs;
+    g->tau_fs = tau_fs;
 }
-

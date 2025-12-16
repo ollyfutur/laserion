@@ -5,16 +5,19 @@
 /* Physicists' Hermite polynomials H_n(x), matching numpy.polynomial.hermite */
 static double hermite_phys(int n, double x)
 {
-    if (n == 0) return 1.0;
-    if (n == 1) return 2.0 * x;
+    if (n == 0)
+        return 1.0;
+    if (n == 1)
+        return 2.0 * x;
 
-    double Hnm1 = 1.0;        /* H_0 */
-    double Hn   = 2.0 * x;    /* H_1 */
+    double Hnm1 = 1.0;   /* H_0 */
+    double Hn = 2.0 * x; /* H_1 */
 
-    for (int k = 1; k < n; ++k) {
+    for (int k = 1; k < n; ++k)
+    {
         double Hp1 = 2.0 * x * Hn - 2.0 * k * Hnm1;
         Hnm1 = Hn;
-        Hn   = Hp1;
+        Hn = Hp1;
     }
     return Hn;
 }
@@ -24,9 +27,11 @@ static inline void compute_z0_k(double w0_um, double wavelength_um,
 {
     const double pi = 3.14159265358979323846;
     const double z0 = pi * w0_um * w0_um / wavelength_um; /* Rayleigh length [µm] */
-    const double k  = 2.0 * pi / wavelength_um;           /* wave number [1/µm] */
-    if (z0_um_out) *z0_um_out = z0;
-    if (k_out)     *k_out     = k;
+    const double k = 2.0 * pi / wavelength_um;            /* wave number [1/µm] */
+    if (z0_um_out)
+        *z0_um_out = z0;
+    if (k_out)
+        *k_out = k;
 }
 
 /* ===================== PlaneWaveProfile ===================== */
@@ -42,10 +47,9 @@ static double plane_eval(const TransverseProfile *base,
 }
 
 static const TransverseProfileVTable PLANE_VT = {
-    .eval    = plane_eval,
-    .phase   = TransverseProfile_phase_default,
-    .destroy = NULL
-};
+    .eval = plane_eval,
+    .phase = TransverseProfile_phase_default,
+    .destroy = NULL};
 
 void PlaneWaveProfile_init(PlaneWaveProfile *p)
 {
@@ -100,7 +104,8 @@ static double hermite_phase(const TransverseProfile *base,
 
     /* Curvature term */
     double curvature = 0.0;
-    if (fabs(z_rel) > 1e-14) {
+    if (fabs(z_rel) > 1e-14)
+    {
         const double R = (z_rel * z_rel + z0_um * z0_um) / z_rel;
         curvature = -k * (x_um * x_um + y_um * y_um) / (2.0 * R);
     }
@@ -113,10 +118,9 @@ static double hermite_phase(const TransverseProfile *base,
 }
 
 static const TransverseProfileVTable HERMITE_VT = {
-    .eval    = hermite_eval,
-    .phase   = hermite_phase,
-    .destroy = NULL
-};
+    .eval = hermite_eval,
+    .phase = hermite_phase,
+    .destroy = NULL};
 
 void HermiteTransverse_init(HermiteTransverse *h,
                             double w0_um,
@@ -125,10 +129,10 @@ void HermiteTransverse_init(HermiteTransverse *h,
                             int m)
 {
     h->base.vt = &HERMITE_VT;
-    h->w0_um   = w0_um;
-    h->zf_um   = zf_um;
-    h->l       = l;
-    h->m       = m;
+    h->w0_um = w0_um;
+    h->zf_um = zf_um;
+    h->l = l;
+    h->m = m;
 }
 
 /* ===================== GaussianTransverse (HG_00) ===================== */
@@ -139,4 +143,3 @@ void GaussianTransverse_init(GaussianTransverse *g,
 {
     HermiteTransverse_init(g, w0_um, zf_um, 0, 0);
 }
-

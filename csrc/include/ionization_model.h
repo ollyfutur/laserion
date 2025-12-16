@@ -5,8 +5,9 @@
 
 /* ADK ionization model using built-in ionization energy tables (eV). */
 
-typedef struct {
-    IonizationModel base;  /* must be first */
+typedef struct
+{
+    IonizationModel base; /* must be first */
     /* currently no runtime parameters; data tables are compiled in */
 } ADKModel;
 
@@ -20,4 +21,3 @@ int ADK_ionization_energy(double *E_eV_out, const char *species, int Z);
 double ADK_scalar_rate(double E_abs, double ion_ene_eV, int Z);
 
 #endif /* IONIZATION_MODEL_H */
-

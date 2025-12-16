@@ -12,8 +12,9 @@
 
 /* ===================== Gaussian temporal ===================== */
 
-typedef struct {
-    TemporalProfile base;   /* must be first */
+typedef struct
+{
+    TemporalProfile base; /* must be first */
     double tau_fs;
 } GaussianTemporal;
 
@@ -30,4 +31,3 @@ void FlatTopTemporal_init(FlatTopTemporal *f, ...);
 */
 
 #endif /* TEMPORAL_PROFILE_H */
-

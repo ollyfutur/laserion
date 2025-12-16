@@ -25,8 +25,9 @@
  *   - E0 whatever unit you use consistently (GV/m in your Python)
  */
 
-typedef struct {
-    LaserPulse base;  /* must be first */
+typedef struct
+{
+    LaserPulse base; /* must be first */
 
     double E0;
     double wavelength_um;
@@ -45,12 +46,12 @@ typedef struct {
     double omega_rad_per_fs;
 
     /* composed sub-objects (non-owning pointers + value polarization) */
-    const TemporalProfile    *temporal;
-    const TransverseProfile  *transverse;
-    Polarization              polarization;
+    const TemporalProfile *temporal;
+    const TransverseProfile *transverse;
+    Polarization polarization;
 
     /* Optional A(t,r) integration parameters (simple trapezoid rule) */
-    int    A_enabled;
+    int A_enabled;
     double A_tmin_fs;
     double A_tmax_fs;
     double A_dt_fs;
@@ -72,8 +73,9 @@ int SinglePulse_init(SinglePulse *p,
 void SinglePulse_enable_A(SinglePulse *p, double tmin_fs, double tmax_fs, double dt_fs);
 
 /* MultiPulse: sum of multiple LaserPulse* */
-typedef struct {
-    LaserPulse base;      /* must be first */
+typedef struct
+{
+    LaserPulse base; /* must be first */
     const LaserPulse **pulses;
     size_t count;
 } MultiPulse;
@@ -82,4 +84,3 @@ typedef struct {
 int MultiPulse_init(MultiPulse *m, const LaserPulse **pulses, size_t count);
 
 #endif /* CORE_H */
-

@@ -18,21 +18,23 @@
 
 /* ===================== Plane wave transverse ===================== */
 
-typedef struct {
-    TransverseProfile base;  /* must be first */
+typedef struct
+{
+    TransverseProfile base; /* must be first */
 } PlaneWaveProfile;
 
 void PlaneWaveProfile_init(PlaneWaveProfile *p);
 
 /* ===================== Hermite-Gaussian transverse ===================== */
 
-typedef struct {
-    TransverseProfile base;  /* must be first */
+typedef struct
+{
+    TransverseProfile base; /* must be first */
 
-    double w0_um;  /* waist at focus [µm] */
-    double zf_um;  /* focus position along z' [µm] */
-    int l;         /* Hermite index in x' */
-    int m;         /* Hermite index in y' */
+    double w0_um; /* waist at focus [µm] */
+    double zf_um; /* focus position along z' [µm] */
+    int l;        /* Hermite index in x' */
+    int m;        /* Hermite index in y' */
 } HermiteTransverse;
 
 void HermiteTransverse_init(HermiteTransverse *h,
@@ -50,4 +52,3 @@ void GaussianTransverse_init(GaussianTransverse *g,
                              double zf_um);
 
 #endif /* TRANSVERSE_PROFILE_H */
-

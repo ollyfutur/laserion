@@ -6,14 +6,14 @@
 
 static double vdot(const double a[3], const double b[3])
 {
-    return a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
 
 static void vcross(const double a[3], const double b[3], double out[3])
 {
-    out[0] = a[1]*b[2] - a[2]*b[1];
-    out[1] = a[2]*b[0] - a[0]*b[2];
-    out[2] = a[0]*b[1] - a[1]*b[0];
+    out[0] = a[1] * b[2] - a[2] * b[1];
+    out[1] = a[2] * b[0] - a[0] * b[2];
+    out[2] = a[0] * b[1] - a[1] * b[0];
 }
 
 static double vnorm(const double a[3])
@@ -24,7 +24,8 @@ static double vnorm(const double a[3])
 static int vnormalize(const double in[3], double out[3])
 {
     double n = vnorm(in);
-    if (n <= 0.0) return 1;
+    if (n <= 0.0)
+        return 1;
     out[0] = in[0] / n;
     out[1] = in[1] / n;
     out[2] = in[2] / n;
@@ -51,8 +52,8 @@ static void singlepulse_to_beam_frame(const SinglePulse *p,
     double dr[3], z_prime;
     singlepulse_axis_coords(p, r_lab, dr, &z_prime);
 
-    r_beam[0] = vdot(dr, p->e_xb);  /* x' */
-    r_beam[1] = vdot(dr, p->e_yb);  /* y' */
+    r_beam[0] = vdot(dr, p->e_xb); /* x' */
+    r_beam[1] = vdot(dr, p->e_yb); /* y' */
     r_beam[2] = z_prime;           /* z' */
 }
 
@@ -60,7 +61,8 @@ static double singlepulse_t_eff(const SinglePulse *p,
                                 double t_fs,
                                 const double r_lab[3])
 {
-    if (!p->use_retarded_time) return t_fs;
+    if (!p->use_retarded_time)
+        return t_fs;
 
     double dr[3], z_prime;
     singlepulse_axis_coords(p, r_lab, dr, &z_prime);
@@ -111,18 +113,22 @@ static void singlepulse_A_impl(const LaserPulse *base,
     const SinglePulse *p = (const SinglePulse *)base;
 
     out_A[0] = out_A[1] = out_A[2] = 0.0;
-    if (!p->A_enabled) return;
+    if (!p->A_enabled)
+        return;
 
     double tmin = p->A_tmin_fs;
     double tmax = p->A_tmax_fs;
-    double dt   = p->A_dt_fs;
+    double dt = p->A_dt_fs;
 
-    if (dt <= 0.0 || tmax <= tmin) return;
+    if (dt <= 0.0 || tmax <= tmin)
+        return;
 
     /* clamp integration upper limit */
     double t_end = t_fs;
-    if (t_end < tmin) t_end = tmin;
-    if (t_end > tmax) t_end = tmax;
+    if (t_end < tmin)
+        t_end = tmin;
+    if (t_end > tmax)
+        t_end = tmax;
 
     /* integrate from tmin to t_end */
     size_t n_steps = (size_t)floor((t_end - tmin) / dt);
@@ -131,7 +137,8 @@ static void singlepulse_A_impl(const LaserPulse *base,
     double E_prev[3];
     singlepulse_E_impl(base, t0, r_lab, E_prev);
 
-    for (size_t i = 1; i <= n_steps; ++i) {
+    for (size_t i = 1; i <= n_steps; ++i)
+    {
         double t1 = tmin + (double)i * dt;
         double E_cur[3];
         singlepulse_E_impl(base, t1, r_lab, E_cur);
@@ -149,7 +156,8 @@ static void singlepulse_A_impl(const LaserPulse *base,
     /* final fractional step to exactly reach t_end (if needed) */
     double t_reached = tmin + (double)n_steps * dt;
     double dt_last = t_end - t_reached;
-    if (dt_last > 0.0) {
+    if (dt_last > 0.0)
+    {
         double E_cur[3];
         singlepulse_E_impl(base, t_end, r_lab, E_cur);
 
@@ -165,10 +173,9 @@ static void singlepulse_destroy_impl(LaserPulse *base)
 }
 
 static const LaserPulseVTable SINGLEPULSE_VT = {
-    .E       = singlepulse_E_impl,
-    .A       = singlepulse_A_impl,
-    .destroy = singlepulse_destroy_impl
-};
+    .E = singlepulse_E_impl,
+    .A = singlepulse_A_impl,
+    .destroy = singlepulse_destroy_impl};
 
 int SinglePulse_init(SinglePulse *p,
                      double E0,
@@ -181,7 +188,8 @@ int SinglePulse_init(SinglePulse *p,
                      int use_retarded_time,
                      const double r_start[3])
 {
-    if (!p || !temporal || !transverse || !polarization || !k_vec || !r_start) return 1;
+    if (!p || !temporal || !transverse || !polarization || !k_vec || !r_start)
+        return 1;
 
     p->base.vt = &SINGLEPULSE_VT;
 
@@ -189,7 +197,8 @@ int SinglePulse_init(SinglePulse *p,
     p->wavelength_um = wavelength_um;
     p->phase0 = phase0;
 
-    if (vnormalize(k_vec, p->k_hat) != 0) return 2;
+    if (vnormalize(k_vec, p->k_hat) != 0)
+        return 2;
 
     p->r_start[0] = r_start[0];
     p->r_start[1] = r_start[1];
@@ -205,24 +214,35 @@ int SinglePulse_init(SinglePulse *p,
     const double z_hat[3] = {0.0, 0.0, 1.0};
     double e1[3];
 
-    if (fabs(vdot(z_hat, p->k_hat)) < 0.999999) {
+    if (fabs(vdot(z_hat, p->k_hat)) < 0.999999)
+    {
         /* e1 = z_hat - (z_hat·k_hat) k_hat */
         double proj = vdot(z_hat, p->k_hat);
         e1[0] = z_hat[0] - proj * p->k_hat[0];
         e1[1] = z_hat[1] - proj * p->k_hat[1];
         e1[2] = z_hat[2] - proj * p->k_hat[2];
-        if (vnormalize(e1, e1) != 0) return 3;
-    } else {
+        if (vnormalize(e1, e1) != 0)
+            return 3;
+    }
+    else
+    {
         /* fallback to x */
-        e1[0] = 1.0; e1[1] = 0.0; e1[2] = 0.0;
+        e1[0] = 1.0;
+        e1[1] = 0.0;
+        e1[2] = 0.0;
     }
 
     double e2[3];
     vcross(p->k_hat, e1, e2);
-    if (vnormalize(e2, e2) != 0) return 4;
+    if (vnormalize(e2, e2) != 0)
+        return 4;
 
-    p->e_xb[0] = e1[0]; p->e_xb[1] = e1[1]; p->e_xb[2] = e1[2];
-    p->e_yb[0] = e2[0]; p->e_yb[1] = e2[1]; p->e_yb[2] = e2[2];
+    p->e_xb[0] = e1[0];
+    p->e_xb[1] = e1[1];
+    p->e_xb[2] = e1[2];
+    p->e_yb[0] = e2[0];
+    p->e_yb[1] = e2[1];
+    p->e_yb[2] = e2[2];
 
     p->temporal = temporal;
     p->transverse = transverse;
@@ -232,7 +252,7 @@ int SinglePulse_init(SinglePulse *p,
     p->A_enabled = 0;
     p->A_tmin_fs = 0.0;
     p->A_tmax_fs = 0.0;
-    p->A_dt_fs   = 0.0;
+    p->A_dt_fs = 0.0;
 
     return 0;
 }
@@ -242,7 +262,7 @@ void SinglePulse_enable_A(SinglePulse *p, double tmin_fs, double tmax_fs, double
     p->A_enabled = 1;
     p->A_tmin_fs = tmin_fs;
     p->A_tmax_fs = tmax_fs;
-    p->A_dt_fs   = dt_fs;
+    p->A_dt_fs = dt_fs;
 }
 
 /* ---------------- MultiPulse implementation ---------------- */
@@ -256,7 +276,8 @@ static void multipulse_E_impl(const LaserPulse *base,
 
     out_E[0] = out_E[1] = out_E[2] = 0.0;
 
-    for (size_t i = 0; i < m->count; ++i) {
+    for (size_t i = 0; i < m->count; ++i)
+    {
         double Ei[3];
         LaserPulse_E(m->pulses[i], t_fs, r_lab, Ei);
         out_E[0] += Ei[0];
@@ -278,7 +299,9 @@ static void multipulse_A_impl(const LaserPulse *base,
      * We will keep it unimplemented until you specify how you want global windows
      * for multi-pulse. Returning zero is safe for now.
      */
-    (void)t_fs; (void)r_lab; (void)m;
+    (void)t_fs;
+    (void)r_lab;
+    (void)m;
 }
 
 static void multipulse_destroy_impl(LaserPulse *base)
@@ -287,18 +310,17 @@ static void multipulse_destroy_impl(LaserPulse *base)
 }
 
 static const LaserPulseVTable MULTIPULSE_VT = {
-    .E       = multipulse_E_impl,
-    .A       = multipulse_A_impl,
-    .destroy = multipulse_destroy_impl
-};
+    .E = multipulse_E_impl,
+    .A = multipulse_A_impl,
+    .destroy = multipulse_destroy_impl};
 
 int MultiPulse_init(MultiPulse *m, const LaserPulse **pulses, size_t count)
 {
-    if (!m || !pulses || count == 0) return 1;
+    if (!m || !pulses || count == 0)
+        return 1;
 
     m->base.vt = &MULTIPULSE_VT;
     m->pulses = pulses;
     m->count = count;
     return 0;
 }
-

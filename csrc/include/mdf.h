@@ -8,7 +8,8 @@
 /* A [GV/m·fs] -> p [m_e c] */
 #define MDF_CONV_A_TO_P (-0.0005866792097892349)
 
-typedef struct {
+typedef struct
+{
     const LaserPulse *pulse;
     const IonizationModel *ion_model;
 
@@ -19,7 +20,7 @@ typedef struct {
     double r[3];
 
     /* time grid */
-    double *t;      /* (N,) */
+    double *t; /* (N,) */
     size_t N;
 
     /* A(t,r) and p(t,r) */
@@ -27,12 +28,12 @@ typedef struct {
     double (*p)[3]; /* (N,3) */
 
     /* |E(t,r)| */
-    double *E_abs;  /* (N,) */
+    double *E_abs; /* (N,) */
 
     /* per level arrays: stored as contiguous blocks [nZ][N] */
-    double *w;      /* (nZ*N) */
-    double *S;      /* (nZ*N) */
-    double *dP;     /* (nZ*N) */
+    double *w;  /* (nZ*N) */
+    double *S;  /* (nZ*N) */
+    double *dP; /* (nZ*N) */
 
     /* per-level scalars */
     double *P_ion_levels; /* (nZ,) */
@@ -66,9 +67,8 @@ int MDF_build(MDF *m,
 void MDF_destroy(MDF *m);
 
 /* Convenience: access [level, i] for w/S/dP (row-major). */
-static inline double MDF_w(const MDF *m, size_t iz, size_t i)  { return m->w [iz*m->N + i]; }
-static inline double MDF_S(const MDF *m, size_t iz, size_t i)  { return m->S [iz*m->N + i]; }
-static inline double MDF_dP(const MDF *m, size_t iz, size_t i) { return m->dP[iz*m->N + i]; }
+static inline double MDF_w(const MDF *m, size_t iz, size_t i) { return m->w[iz * m->N + i]; }
+static inline double MDF_S(const MDF *m, size_t iz, size_t i) { return m->S[iz * m->N + i]; }
+static inline double MDF_dP(const MDF *m, size_t iz, size_t i) { return m->dP[iz * m->N + i]; }
 
 #endif /* MDF_H */
-
