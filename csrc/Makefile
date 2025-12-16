@@ -45,7 +45,7 @@ LIB_OBJS := $(LIB_SRCS:%.c=$(BUILD_DIR)/%.o)
 # Each test source must be: tests/test_<name>.c
 # Each executable will be:  bin/test_<name>
 
-TESTS := temporal
+TESTS := temporal transverse
 TEST_EXES := $(TESTS:%=$(BIN_DIR)/test_%)
 
 # ================= Default target ========================================
