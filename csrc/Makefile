@@ -3,6 +3,13 @@
 MPICC := /opt/openmpi/gcc-14.2.0/bin/mpicc
 CC    := $(MPICC)
 
+
+# ================= HDF5 ==================================================
+
+H5_ROOT  := /opt/hdf5/gcc-14.2.0
+H5_FLAGS := -I$(H5_ROOT)/include
+H5_LINK  := -L$(H5_ROOT)/lib -lhdf5 -lz -lm -ldl
+
 # ================= Flags =================================================
 
 CSTD   := -std=c17
@@ -36,6 +43,8 @@ LIB_SRCS := \
 	$(SRC_DIR)/polarization.c \
 	$(SRC_DIR)/ionization_model.c \
 	$(SRC_DIR)/core.c \
+      $(SRC_DIR)/diagnostics_field.c \
+      $(SRC_DIR)/diag_h5.c \
 	$(SRC_DIR)/mdf.c
 
 LIB_OBJS := $(LIB_SRCS:%.c=$(BUILD_DIR)/%.o)
@@ -57,13 +66,13 @@ all: $(TEST_EXES)
 # Compile any .c file into build/<path>.o
 $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(H5_FLAGS) -c $< -o $@
 
 # Link each test executable:
 #   bin/test_<name> = (all library objs) + build/tests/test_<name>.o
 $(BIN_DIR)/test_%: $(LIB_OBJS) $(BUILD_DIR)/$(TEST_DIR)/test_%.o
 	@mkdir -p $(BIN_DIR)
-	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS) $(LDLIBS)
+	$(CC) $(CFLAGS) $(H5_FLAGS) $^ -o $@ $(LDFLAGS) $(LDLIBS) $(H5_LINK)
 
 # ================= Convenience targets ===================================
 
