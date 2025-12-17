@@ -86,7 +86,6 @@ static int write_root_attrs(hid_t file,
                             double time_value,
                             int iter_value)
 {
-    /* Per your spec */
     if (write_attr_str(file, "NAME", dataset_name))
         return 1;
     if (write_attr_str(file, "TYPE", "grid"))
@@ -101,6 +100,8 @@ static int write_root_attrs(hid_t file,
         return 6; /* exactly as requested */
     if (write_attr_str(file, "UNITS", units))
         return 7;
+    if (write_attr_str(file, "LABEL", dataset_name))
+        return 8;
     return 0;
 }
 
