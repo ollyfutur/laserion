@@ -35,8 +35,9 @@ static void mkdir_p(const char *path)
 
 static float *xmalloc_f(size_t n)
 {
-    float *p = (float*)malloc(n * sizeof(float));
-    if (!p) {
+    float *p = (float *)malloc(n * sizeof(float));
+    if (!p)
+    {
         fprintf(stderr, "Allocation failed (n=%zu)\n", n);
         exit(2);
     }
@@ -49,12 +50,12 @@ int main(void)
 
     // ----------------- Define a simple SinglePulse -----------------
     // Laser parameters (pick something reasonable for a test)
-    const double E0_GVm    = 150.0;   // peak field [GV/m]
-    const double lambda_um = 10.0;    // wavelength [um]
-    const double cep_rad   = 0.0;     // CEP [rad]
+    const double E0_GVm = 150.0;   // peak field [GV/m]
+    const double lambda_um = 10.0; // wavelength [um]
+    const double cep_rad = 0.0;    // CEP [rad]
 
     // Propagation direction (not necessarily normalized in your code; keep consistent with your usage)
-    double k[3]  = {0.0, 0.0, 1.0};
+    double k[3] = {0.0, 0.0, 1.0};
 
     // Pulse center position (r0): one position only
     double r0[3] = {0.0, 0.0, 0.0};
@@ -69,7 +70,8 @@ int main(void)
 
     // Polarization: linear at +0 degrees in the transverse plane
     Polarization pol;
-    if (LinearPolarization_init(&pol, k, 90.0) != 0) {
+    if (LinearPolarization_init(&pol, k, 90.0) != 0)
+    {
         fprintf(stderr, "LinearPolarization_init failed\n");
         return 1;
     }
@@ -79,8 +81,8 @@ int main(void)
     if (SinglePulse_init(&p,
                          E0_GVm,
                          lambda_um,
-                         (const TemporalProfile*)&tp,
-                         (const TransverseProfile*)&tr,
+                         (const TemporalProfile *)&tp,
+                         (const TransverseProfile *)&tr,
                          &pol,
                          cep_rad,
                          k,
@@ -92,7 +94,7 @@ int main(void)
     }
 
     // Convenience pointer for polymorphic calls
-    const LaserPulse *lp = (const LaserPulse*)&p;
+    const LaserPulse *lp = (const LaserPulse *)&p;
 
     // ----------------- Diagnostic 1: Ey(t) at fixed (x,y,z) -----------------
     {
@@ -102,7 +104,8 @@ int main(void)
 
         float *ey = xmalloc_f(nt);
 
-        for (size_t i = 0; i < nt; ++i) {
+        for (size_t i = 0; i < nt; ++i)
+        {
             double t_fs = tmin_fs + (tmax_fs - tmin_fs) * (double)i / (double)(nt - 1);
             double r_um[3] = {x_um, y_um, z_um};
             double E[3];
@@ -111,15 +114,13 @@ int main(void)
         }
 
         DiagAxis1D ax_t = {
-            .name = "t", .long_name = "t",
-            .units = "fs",
-            .vmin = tmin_fs, .vmax = tmax_fs
-        };
+            .name = "t", .long_name = "t", .units = "fs", .vmin = tmin_fs, .vmax = tmax_fs};
 
         // Per your rules: time series -> TIME=0, ITER=0
         if (diag_h5_write_field_1d("out/ey_timeseries_t.h5",
-                                   "E_y",
+                                   "ey",
                                    "GV/m",
+                                   "E_y",
                                    0.0,
                                    0,
                                    ey, nt,
@@ -135,14 +136,16 @@ int main(void)
 
     // ----------------- Diagnostic 2: Ay(t) at fixed (x,y,z) -----------------
     // If SinglePulse A is not available in your core, comment this block out.
-        SinglePulse_enable_A(&p, -3000.0, 3000.0, 0.05);    {
+    SinglePulse_enable_A(&p, -3000.0, 3000.0, 0.05);
+    {
         const double x_um = 0.0, y_um = 3.0, z_um = 0.0;
         const double tmin_fs = -2000.0, tmax_fs = 2000.0;
         const size_t nt = 4001;
 
         float *ay = xmalloc_f(nt);
 
-        for (size_t i = 0; i < nt; ++i) {
+        for (size_t i = 0; i < nt; ++i)
+        {
             double t_fs = tmin_fs + (tmax_fs - tmin_fs) * (double)i / (double)(nt - 1);
             double r_um[3] = {x_um, y_um, z_um};
             double A[3];
@@ -151,15 +154,13 @@ int main(void)
         }
 
         DiagAxis1D ax_t = {
-            .name = "t", .long_name = "t",
-            .units = "fs",
-            .vmin = tmin_fs, .vmax = tmax_fs
-        };
+            .name = "t", .long_name = "t", .units = "fs", .vmin = tmin_fs, .vmax = tmax_fs};
 
         // TIME=0, ITER=0 for a time series
         if (diag_h5_write_field_1d("out/ay_timeseries_t.h5",
                                    "ay",
                                    "GV/m fs",
+                                   "A_y",
                                    0.0,
                                    0,
                                    ay, nt,
@@ -182,7 +183,8 @@ int main(void)
 
         float *ey = xmalloc_f(nz);
 
-        for (size_t i = 0; i < nz; ++i) {
+        for (size_t i = 0; i < nz; ++i)
+        {
             double z_um = zmin_um + (zmax_um - zmin_um) * (double)i / (double)(nz - 1);
             double r_um[3] = {x_um, y_um, z_um};
             double E[3];
@@ -191,17 +193,15 @@ int main(void)
         }
 
         DiagAxis1D ax_z = {
-            .name = "z", .long_name = "z",
-            .units = "\\mu m",
-            .vmin = zmin_um, .vmax = zmax_um
-        };
+            .name = "z", .long_name = "z", .units = "\\mu m", .vmin = zmin_um, .vmax = zmax_um};
 
         // Fixed-time plot -> TIME=t, ITER=int(t*10000)
         int iter = (int)llround(t_fs * 10000.0);
 
         if (diag_h5_write_field_1d("out/ey_lineout_z.h5",
-                                   "E_y",
+                                   "ey",
                                    "GV/m",
+                                   "E_y",
                                    t_fs,
                                    iter,
                                    ey, nz,
@@ -229,9 +229,11 @@ int main(void)
 
         float *ey = xmalloc_f(ny * nz);
 
-        for (size_t iz = 0; iz < nz; ++iz) {
+        for (size_t iz = 0; iz < nz; ++iz)
+        {
             double z_um = zmin_um + (zmax_um - zmin_um) * (double)iz / (double)(nz - 1);
-            for (size_t iy = 0; iy < ny; ++iy) {
+            for (size_t iy = 0; iy < ny; ++iy)
+            {
                 double y_um = ymin_um + (ymax_um - ymin_um) * (double)iy / (double)(ny - 1);
                 double r_um[3] = {x_um, y_um, z_um};
                 double E[3];
@@ -241,21 +243,16 @@ int main(void)
         }
 
         DiagAxis1D ax_y = {
-            .name = "y", .long_name = "y",
-            .units = "\\mu m",
-            .vmin = ymin_um, .vmax = ymax_um
-        };
+            .name = "y", .long_name = "y", .units = "\\mu m", .vmin = ymin_um, .vmax = ymax_um};
         DiagAxis1D ax_z = {
-            .name = "z", .long_name = "z",
-            .units = "\\mu m",
-            .vmin = zmin_um, .vmax = zmax_um
-        };
+            .name = "z", .long_name = "z", .units = "\\mu m", .vmin = zmin_um, .vmax = zmax_um};
 
         int iter = (int)llround(t_fs * 10000.0);
 
         if (diag_h5_write_field_2d("out/ey_slice_yz.h5",
-                                   "E_y",
+                                   "ey",
                                    "GV/m",
+                                   "E_y",
                                    t_fs,
                                    iter,
                                    ey,
@@ -273,4 +270,3 @@ int main(void)
     printf("Wrote HDF5 diagnostics under ./out/\n");
     return 0;
 }
-

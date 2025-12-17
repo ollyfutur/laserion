@@ -83,6 +83,7 @@ static int write_attr_i32(hid_t obj, const char *name, int v)
 static int write_root_attrs(hid_t file,
                             const char *dataset_name,
                             const char *units,
+                            const char *label,
                             double time_value,
                             int iter_value)
 {
@@ -100,7 +101,7 @@ static int write_root_attrs(hid_t file,
         return 6; /* exactly as requested */
     if (write_attr_str(file, "UNITS", units))
         return 7;
-    if (write_attr_str(file, "LABEL", dataset_name))
+    if (write_attr_str(file, "LABEL", label))
         return 8;
     return 0;
 }
@@ -188,6 +189,7 @@ static int write_axis_group(hid_t file,
 int diag_h5_write_field_1d(const char *path,
                            const char *dataset_name,
                            const char *units,
+                           const char *label,
                            double time_value,
                            int iter_value,
                            const float *data,
@@ -198,7 +200,7 @@ int diag_h5_write_field_1d(const char *path,
     if (f < 0)
         return 1;
 
-    if (write_root_attrs(f, dataset_name, units, time_value, iter_value))
+    if (write_root_attrs(f, dataset_name, units, label, time_value, iter_value))
     {
         H5Fclose(f);
         return 2;
@@ -243,6 +245,7 @@ int diag_h5_write_field_1d(const char *path,
 int diag_h5_write_field_2d(const char *path,
                            const char *dataset_name,
                            const char *units,
+                           const char *label,
                            double time_value,
                            int iter_value,
                            const float *data,
@@ -255,7 +258,7 @@ int diag_h5_write_field_2d(const char *path,
     if (f < 0)
         return 1;
 
-    if (write_root_attrs(f, dataset_name, units, time_value, iter_value))
+    if (write_root_attrs(f, dataset_name, units, label, time_value, iter_value))
     {
         H5Fclose(f);
         return 2;
