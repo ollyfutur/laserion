@@ -87,4 +87,3 @@ This MultiPulse test simultaneously exercises:
 - superposition logic (E_total)
 - *consistent* A(t) construction from E_total (trapezoid rule)
 
-This is directly aligned with your next-stage objective of moving the heavy grid work to C/MPI.

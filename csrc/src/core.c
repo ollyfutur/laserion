@@ -293,15 +293,60 @@ static void multipulse_A_impl(const LaserPulse *base,
                               double out_A[3])
 {
     const MultiPulse *m = (const MultiPulse *)base;
-    out_A[0] = out_A[1] = out_A[2] = 0.0;
 
-    /* Minimal: integrate using a fixed dt and window is not stored here.
-     * We will keep it unimplemented until you specify how you want global windows
-     * for multi-pulse. Returning zero is safe for now.
-     */
-    (void)t_fs;
-    (void)r_lab;
-    (void)m;
+    out_A[0] = out_A[1] = out_A[2] = 0.0;
+    if (!m->A_enabled)
+        return;
+
+    double tmin = m->A_tmin_fs;
+    double tmax = m->A_tmax_fs;
+    double dt   = m->A_dt_fs;
+
+    if (dt <= 0.0 || tmax <= tmin)
+        return;
+
+    /* clamp integration upper limit */
+    double t_end = t_fs;
+    if (t_end < tmin)
+        t_end = tmin;
+    if (t_end > tmax)
+        t_end = tmax;
+
+    /* integrate from tmin to t_end */
+    size_t n_steps = (size_t)floor((t_end - tmin) / dt);
+    double t0 = tmin;
+
+    double E_prev[3];
+    LaserPulse_E(base, t0, r_lab, E_prev);
+
+    for (size_t i = 1; i <= n_steps; ++i)
+    {
+        double t1 = tmin + (double)i * dt;
+        double E_cur[3];
+        LaserPulse_E(base, t1, r_lab, E_cur);
+
+        /* trapezoid: A -= 0.5*(E_prev + E_cur)*dt */
+        out_A[0] -= 0.5 * (E_prev[0] + E_cur[0]) * dt;
+        out_A[1] -= 0.5 * (E_prev[1] + E_cur[1]) * dt;
+        out_A[2] -= 0.5 * (E_prev[2] + E_cur[2]) * dt;
+
+        E_prev[0] = E_cur[0];
+        E_prev[1] = E_cur[1];
+        E_prev[2] = E_cur[2];
+    }
+
+    /* final fractional step to exactly reach t_end (if needed) */
+    double t_reached = tmin + (double)n_steps * dt;
+    double dt_last = t_end - t_reached;
+    if (dt_last > 0.0)
+    {
+        double E_cur[3];
+        LaserPulse_E(base, t_end, r_lab, E_cur);
+
+        out_A[0] -= 0.5 * (E_prev[0] + E_cur[0]) * dt_last;
+        out_A[1] -= 0.5 * (E_prev[1] + E_cur[1]) * dt_last;
+        out_A[2] -= 0.5 * (E_prev[2] + E_cur[2]) * dt_last;
+    }
 }
 
 static void multipulse_destroy_impl(LaserPulse *base)
@@ -322,5 +367,20 @@ int MultiPulse_init(MultiPulse *m, const LaserPulse **pulses, size_t count)
     m->base.vt = &MULTIPULSE_VT;
     m->pulses = pulses;
     m->count = count;
+
+    /* A disabled by default */
+    m->A_enabled = 0;
+    m->A_tmin_fs = 0.0;
+    m->A_tmax_fs = 0.0;
+    m->A_dt_fs   = 0.0;
+
     return 0;
+}
+
+void MultiPulse_enable_A(MultiPulse *m, double tmin_fs, double tmax_fs, double dt_fs)
+{
+    m->A_enabled = 1;
+    m->A_tmin_fs = tmin_fs;
+    m->A_tmax_fs = tmax_fs;
+    m->A_dt_fs   = dt_fs;
 }

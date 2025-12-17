@@ -78,9 +78,17 @@ typedef struct
     LaserPulse base; /* must be first */
     const LaserPulse **pulses;
     size_t count;
+
+    int A_enabled;
+    double A_tmin_fs;
+    double A_tmax_fs;
+    double A_dt_fs;
 } MultiPulse;
 
 /* MultiPulse init: pulses is an array of LaserPulse* of length count. */
 int MultiPulse_init(MultiPulse *m, const LaserPulse **pulses, size_t count);
+
+/* MultiPulse init: pulses is an array of LaserPulse* of length count. */
+void MultiPulse_enable_A(MultiPulse *m, double tmin_fs, double tmax_fs, double dt_fs);
 
 #endif /* CORE_H */

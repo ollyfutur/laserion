@@ -14,9 +14,7 @@
  *
  * Where:
  *   E is evaluated directly from MultiPulse (sum of E_i).
- *   A is computed by numeric trapezoid integration:
- *       A(t) = -∫_{tmin}^{min(t,tmax)} E(t') dt'
- *     with uniform dt, identical logic to SinglePulse_A_impl.
+ *   A is evaluated via internal LaserPulse_A dispatch.
  *
  * Notes:
  *   - CSV is written to stdout only.
@@ -74,54 +72,6 @@ static void die_usage(const char *prog)
         "  i,t_fs,x_um,y_um,z_um,Ex,Ey,Ez,Ax,Ay,Az\n",
         prog);
     exit(2);
-}
-
-/* ---------- A integration for any LaserPulse (MultiPulse included) ---------- */
-static void pulse_A_trap(const LaserPulse *p,
-                         double t_fs,
-                         const double r_um[3],
-                         double tmin_fs,
-                         double tmax_fs,
-                         double dt_fs,
-                         double out_A[3])
-{
-    out_A[0] = out_A[1] = out_A[2] = 0.0;
-
-    if (!(dt_fs > 0.0) || !(tmax_fs > tmin_fs)) return;
-
-    double t_end = t_fs;
-    if (t_end < tmin_fs) t_end = tmin_fs;
-    if (t_end > tmax_fs) t_end = tmax_fs;
-
-    size_t n_steps = (size_t)floor((t_end - tmin_fs) / dt_fs);
-
-    double E_prev[3];
-    LaserPulse_E(p, tmin_fs, r_um, E_prev);
-
-    for (size_t i = 1; i <= n_steps; ++i) {
-        double ti = tmin_fs + (double)i * dt_fs;
-        double E_cur[3];
-        LaserPulse_E(p, ti, r_um, E_cur);
-
-        out_A[0] -= 0.5 * (E_prev[0] + E_cur[0]) * dt_fs;
-        out_A[1] -= 0.5 * (E_prev[1] + E_cur[1]) * dt_fs;
-        out_A[2] -= 0.5 * (E_prev[2] + E_cur[2]) * dt_fs;
-
-        E_prev[0] = E_cur[0];
-        E_prev[1] = E_cur[1];
-        E_prev[2] = E_cur[2];
-    }
-
-    double t_reached = tmin_fs + (double)n_steps * dt_fs;
-    double dt_last = t_end - t_reached;
-    if (dt_last > 0.0) {
-        double E_cur[3];
-        LaserPulse_E(p, t_end, r_um, E_cur);
-
-        out_A[0] -= 0.5 * (E_prev[0] + E_cur[0]) * dt_last;
-        out_A[1] -= 0.5 * (E_prev[1] + E_cur[1]) * dt_last;
-        out_A[2] -= 0.5 * (E_prev[2] + E_cur[2]) * dt_last;
-    }
 }
 
 int main(int argc, char **argv)
@@ -220,6 +170,12 @@ int main(int argc, char **argv)
     MultiPulse mp;
     if (MultiPulse_init(&mp, arr, 3) != 0) { fprintf(stderr, "multipulse init failed\n"); return 5; }
 
+    /* IMPORTANT:
+     * This requires you to have implemented MultiPulse internal A integration
+     * (MultiPulse_enable_A + multipulse_A_impl) in core.h/core.c.
+     */
+    MultiPulse_enable_A(&mp, Atmin, Atmax, Adt);
+
     const LaserPulse *pulse = (const LaserPulse *)&mp;
 
     printf("i,t_fs,x_um,y_um,z_um,Ex,Ey,Ez,Ax,Ay,Az\n");
@@ -238,7 +194,7 @@ int main(int argc, char **argv)
         LaserPulse_E(pulse, t, r, E);
 
         double A[3];
-        pulse_A_trap(pulse, t, r, Atmin, Atmax, Adt, A);
+        LaserPulse_A(pulse, t, r, A);
 
         printf("%ld,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g,%.17g\n",
                i, t, r[0], r[1], r[2], E[0], E[1], E[2], A[0], A[1], A[2]);
@@ -252,3 +208,4 @@ int main(int argc, char **argv)
 
     return 0;
 }
+
