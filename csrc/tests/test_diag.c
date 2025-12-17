@@ -118,7 +118,7 @@ int main(void)
 
         // Per your rules: time series -> TIME=0, ITER=0
         if (diag_h5_write_field_1d("out/ey_timeseries_t.h5",
-                                   "ey",
+                                   "E_y",
                                    "GV/m",
                                    0.0,
                                    0,
@@ -135,10 +135,10 @@ int main(void)
 
     // ----------------- Diagnostic 2: Ay(t) at fixed (x,y,z) -----------------
     // If SinglePulse A is not available in your core, comment this block out.
-        SinglePulse_enable_A(&p, -3000.0, 3000.0, 0.5);    {
+        SinglePulse_enable_A(&p, -3000.0, 3000.0, 0.05);    {
         const double x_um = 0.0, y_um = 3.0, z_um = 0.0;
         const double tmin_fs = -2000.0, tmax_fs = 2000.0;
-        const size_t nt = 2001;
+        const size_t nt = 4001;
 
         float *ay = xmalloc_f(nt);
 
@@ -200,7 +200,7 @@ int main(void)
         int iter = (int)llround(t_fs * 10000.0);
 
         if (diag_h5_write_field_1d("out/ey_lineout_z.h5",
-                                   "ey",
+                                   "E_y",
                                    "GV/m",
                                    t_fs,
                                    iter,
@@ -254,7 +254,7 @@ int main(void)
         int iter = (int)llround(t_fs * 10000.0);
 
         if (diag_h5_write_field_2d("out/ey_slice_yz.h5",
-                                   "ey",
+                                   "E_y",
                                    "GV/m",
                                    t_fs,
                                    iter,
