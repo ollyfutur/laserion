@@ -304,7 +304,8 @@ static int write_dataset_2d(const FG_Options *opt,
                                      dset_name, dset_units, label,
                                      time, iter,
                                      data, n1, n2,
-                                     axis1, axis2, fixed);
+                                     axis1, axis2,
+                                     fixed);
     }
 }
 
@@ -507,14 +508,20 @@ static int run_generic_1d(const struct LaserPulse *pulse,
 
     if (rank == root)
     {
-        DiagAxis1D axis1 = make_diag_axis(&req->a1, a1, n1);
+        DiagAxis axis1 = make_diag_axis(&req->a1, a1, n1);
+
+        DiagFixedCoords fixed = (DiagFixedCoords){
+            .t = req->t0_fs,
+            .x = req->x0_um,
+            .y = req->y0_um,
+            .z = req->z0_um};
 
         for (size_t k = 0; k < nds; ++k)
         {
             int rc = write_dataset_1d(opt, path_or_prefix,
                                       names[k], units[k], longn[k],
                                       full[k], n1,
-                                      &axis1);
+                                      &axis1, &fixed);
             if (rc != 0)
             {
                 for (size_t j = 0; j < nds; ++j)
@@ -751,15 +758,21 @@ static int run_generic_2d(const struct LaserPulse *pulse,
 
     if (rank == root)
     {
-        DiagAxis1D axis1 = make_diag_axis(&req->a1, a1, n1);
-        DiagAxis1D axis2 = make_diag_axis(&req->a2, a2, n2);
+        DiagAxis axis1 = make_diag_axis(&req->a1, a1, n1);
+        DiagAxis axis2 = make_diag_axis(&req->a2, a2, n2);
+
+        DiagFixedCoords fixed = (DiagFixedCoords){
+            .t = req->t0_fs,
+            .x = req->x0_um,
+            .y = req->y0_um,
+            .z = req->z0_um};
 
         for (size_t k = 0; k < nds; ++k)
         {
             int rc = write_dataset_2d(opt, path_or_prefix,
                                       names[k], units[k], longn[k],
                                       full[k], n1, n2,
-                                      &axis1, &axis2);
+                                      &axis1, &axis2, &fixed);
             if (rc != 0)
             {
                 for (size_t j = 0; j < nds; ++j)

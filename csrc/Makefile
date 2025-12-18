@@ -44,6 +44,7 @@ LIB_SRCS := \
 	$(SRC_DIR)/ionization_model.c \
 	$(SRC_DIR)/core.c \
 	$(SRC_DIR)/diag_h5.c \
+      $(SRC_DIR)/field_grid.c \
 	$(SRC_DIR)/mdf.c
 
 LIB_OBJS := $(LIB_SRCS:%.c=$(BUILD_DIR)/%.o)
@@ -53,7 +54,8 @@ LIB_OBJS := $(LIB_SRCS:%.c=$(BUILD_DIR)/%.o)
 # Each test source must be: tests/test_<name>.c
 # Each executable will be:  bin/test_<name>
 
-TESTS := temporal transverse adk pulse pulse_A multipulse grid_examples
+TESTS := temporal transverse adk pulse pulse_A multipulse grid_examples \
+         field_grid
 TEST_EXES := $(TESTS:%=$(BIN_DIR)/test_%)
 
 # ================= Default target ========================================
