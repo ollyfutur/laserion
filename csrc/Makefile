@@ -8,7 +8,7 @@ CC    := $(MPICC)
 
 H5_ROOT  := /opt/hdf5/gcc-14.2.0
 H5_FLAGS := -I$(H5_ROOT)/include
-H5_LINK  := -L$(H5_ROOT)/lib -lhdf5 -lz -lm -ldl
+H5_LINK  := -L$(H5_ROOT)/lib -lhdf5 -lz -ldl
 
 # ================= Flags =================================================
 
@@ -43,8 +43,12 @@ LIB_SRCS := \
 	$(SRC_DIR)/polarization.c \
 	$(SRC_DIR)/ionization_model.c \
 	$(SRC_DIR)/core.c \
-      $(SRC_DIR)/field_request.c \
-      $(SRC_DIR)/diag_h5.c \
+	$(SRC_DIR)/field_request.c \
+	$(SRC_DIR)/field_result.c \
+	$(SRC_DIR)/field_calc.c \
+	$(SRC_DIR)/field_calc_timeseries.c \
+	$(SRC_DIR)/field_diag_h5.c \
+	$(SRC_DIR)/diag_h5.c \
 	$(SRC_DIR)/mdf.c
 
 LIB_OBJS := $(LIB_SRCS:%.c=$(BUILD_DIR)/%.o)
@@ -54,7 +58,7 @@ LIB_OBJS := $(LIB_SRCS:%.c=$(BUILD_DIR)/%.o)
 # Each test source must be: tests/test_<name>.c
 # Each executable will be:  bin/test_<name>
 
-TESTS := temporal transverse adk pulse pulse_A multipulse
+TESTS := temporal transverse adk pulse pulse_A multipulse timeseries_mpi
 TEST_EXES := $(TESTS:%=$(BIN_DIR)/test_%)
 
 # ================= Default target ========================================
