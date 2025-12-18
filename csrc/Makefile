@@ -58,7 +58,8 @@ LIB_OBJS := $(LIB_SRCS:%.c=$(BUILD_DIR)/%.o)
 # Each test source must be: tests/test_<name>.c
 # Each executable will be:  bin/test_<name>
 
-TESTS := temporal transverse adk pulse pulse_A multipulse timeseries_mpi
+TESTS := temporal transverse adk pulse pulse_A multipulse timeseries_mpi \
+         zt_timeseries_mpi
 TEST_EXES := $(TESTS:%=$(BIN_DIR)/test_%)
 
 # ================= Default target ========================================
