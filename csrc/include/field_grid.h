@@ -4,7 +4,7 @@
 #include <mpi.h>
 
 #include "base.h"    /* LaserPulse_E, LaserPulse_A */
-#include "diag_h5.h" /* diag_h5_write_field_1d/2d, DiagAxis1D */
+#include "diag_h5.h" /* diag_h5_write_field_1d/2d, DiagAxis */
 
 /* ----------------------------- axis selection ----------------------------- */
 
