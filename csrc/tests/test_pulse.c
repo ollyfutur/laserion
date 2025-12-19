@@ -35,12 +35,14 @@
  *   if tspan not given: tspan=3*tau
  */
 
+#define _POSIX_C_SOURCE 200809L
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
 
-#include "core.h"
+#include "laser.h"
 #include "temporal_profile.h"
 #include "transverse_profile.h"
 #include "polarization.h"

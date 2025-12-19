@@ -27,7 +27,7 @@
 #include <math.h>
 #include <time.h>
 
-#include "core.h"
+#include "laser.h"
 #include "temporal_profile.h"
 #include "transverse_profile.h"
 #include "polarization.h"
@@ -172,7 +172,7 @@ int main(int argc, char **argv)
 
     /* IMPORTANT:
      * This requires you to have implemented MultiPulse internal A integration
-     * (MultiPulse_enable_A + multipulse_A_impl) in core.h/core.c.
+     * (MultiPulse_enable_A + multipulse_A_impl) in laser.h/laser.c.
      */
     MultiPulse_enable_A(&mp, Atmin, Atmax, Adt);
 

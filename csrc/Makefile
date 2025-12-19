@@ -17,9 +17,24 @@ WARN   := -Wall -Wextra -pedantic
 OPT    := -O3
 ALIAS  := -fstrict-aliasing
 
-# Apple Silicon tuning (override on command line if needed)
-#   make ARCH_FLAGS=
-ARCH_FLAGS ?= -mcpu=apple-m1
+# === OS / architecture detection =========================================
+
+UNAME_S := $(shell uname -s)
+UNAME_M := $(shell uname -m)
+
+ifeq ($(OS),Windows_NT)
+    ARCH_FLAGS = -march=native
+
+else ifeq ($(UNAME_S),Darwin)
+    ifeq ($(UNAME_M),arm64)
+        ARCH_FLAGS = -mcpu=apple-m1
+    else
+        ARCH_FLAGS = -march=native
+    endif
+
+else
+    ARCH_FLAGS = -march=native
+endif
 
 CFLAGS   := $(CSTD) $(WARN) $(OPT) $(ALIAS) $(ARCH_FLAGS)
 CPPFLAGS := -Iinclude
@@ -42,10 +57,14 @@ LIB_SRCS := \
 	$(SRC_DIR)/transverse_profile.c \
 	$(SRC_DIR)/polarization.c \
 	$(SRC_DIR)/ionization_model.c \
-	$(SRC_DIR)/core.c \
+	$(SRC_DIR)/ionization.c \
+	$(SRC_DIR)/laser.c \
 	$(SRC_DIR)/diag_h5.c \
-      $(SRC_DIR)/field_grid.c \
-	$(SRC_DIR)/mdf.c
+	$(SRC_DIR)/diag_grid.c \
+        $(SRC_DIR)/field_grid.c \
+        $(SRC_DIR)/ionization_grid.c \
+	$(SRC_DIR)/mdf.c \
+	$(SRC_DIR)/mdf_grid.c
 
 LIB_OBJS := $(LIB_SRCS:%.c=$(BUILD_DIR)/%.o)
 
@@ -55,7 +74,7 @@ LIB_OBJS := $(LIB_SRCS:%.c=$(BUILD_DIR)/%.o)
 # Each executable will be:  bin/test_<name>
 
 TESTS := temporal transverse adk pulse pulse_A multipulse grid_examples \
-         field_grid
+         field_grid ionization mdf
 TEST_EXES := $(TESTS:%=$(BIN_DIR)/test_%)
 
 # ================= Default target ========================================

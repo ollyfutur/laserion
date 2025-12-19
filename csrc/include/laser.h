@@ -1,5 +1,5 @@
-#ifndef CORE_H
-#define CORE_H
+#ifndef LASER_H
+#define LASER_H
 
 #include <stddef.h>
 #include "base.h"
@@ -91,4 +91,4 @@ int MultiPulse_init(MultiPulse *m, const LaserPulse **pulses, size_t count);
 /* MultiPulse init: pulses is an array of LaserPulse* of length count. */
 void MultiPulse_enable_A(MultiPulse *m, double tmin_fs, double tmax_fs, double dt_fs);
 
-#endif /* CORE_H */
+#endif /* LASER_H */

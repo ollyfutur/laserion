@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "core.h"
+#include "laser.h"
 #include "temporal_profile.h"
 #include "transverse_profile.h"
 #include "polarization.h"

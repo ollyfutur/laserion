@@ -3,33 +3,31 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
 
-/* ----------------------------- small helpers ----------------------------- */
+#include "diag_grid.h" /* dg_run_1d/2d */
 
-static int is_valid_axis(FG_Axis id)
+/* ----------------------------- validation -------------------------------- */
+
+static int axis_is_valid(FG_Axis id)
 {
     return (id == FG_T || id == FG_X || id == FG_Y || id == FG_Z);
 }
 
 int fg_validate_axis(const FG_AxisSpec *a)
 {
-    if (!a)
-        return 1;
-    if (!is_valid_axis(a->id))
-        return 2;
+    if (!a) return 1;
+    if (!axis_is_valid(a->id)) return 2;
 
     if (a->kind == FG_AXIS_LINSPACE)
     {
-        if (a->n < 2)
-            return 3;
+        if (a->n < 2) return 3;
         return 0;
     }
     if (a->kind == FG_AXIS_VALUES)
     {
-        if (!a->values)
-            return 4;
-        if (a->n_values < 2)
-            return 5;
+        if (!a->values) return 4;
+        if (a->n_values < 2) return 5;
         return 0;
     }
     return 6;
@@ -37,770 +35,313 @@ int fg_validate_axis(const FG_AxisSpec *a)
 
 int fg_validate_options(const FG_Options *opt)
 {
-    if (!opt)
-        return 1;
-    if (opt->quantity_mask == 0)
-        return 2;
-    if (opt->component_mask == 0)
-        return 3;
+    if (!opt) return 1;
 
-    if (opt->quantity_mask & ~((uint32_t)FG_Q_E | (uint32_t)FG_Q_A))
-        return 4;
-    if (opt->component_mask & ~((uint32_t)FG_C_ALL))
-        return 5;
+    const uint32_t qmask = opt->quantity_mask;
+    const uint32_t cmask = opt->component_mask;
+
+    if ((qmask & ((uint32_t)FG_Q_E | (uint32_t)FG_Q_A)) == 0u) return 2;
+    if ((cmask & (uint32_t)FG_C_ALL) == 0u) return 3;
+    if ((cmask & ~(uint32_t)FG_C_ALL) != 0u) return 4;
 
     if (!(opt->write_mode == FG_WRITE_SINGLE_FILE || opt->write_mode == FG_WRITE_SPLIT_FILES))
-        return 6;
+        return 5;
+
     return 0;
 }
 
 int fg_validate_request_1d(const FG_Request1D *r, const FG_Options *opt)
 {
-    if (!r || !opt)
-        return 1;
+    if (!r || !opt) return 1;
     int rc = fg_validate_options(opt);
-    if (rc)
-        return 2;
+    if (rc) return 10 + rc;
     rc = fg_validate_axis(&r->a1);
-    if (rc)
-        return 3;
+    if (rc) return 20 + rc;
     return 0;
 }
 
 int fg_validate_request_2d(const FG_Request2D *r, const FG_Options *opt)
 {
-    if (!r || !opt)
-        return 1;
+    if (!r || !opt) return 1;
     int rc = fg_validate_options(opt);
-    if (rc)
-        return 2;
+    if (rc) return 10 + rc;
     rc = fg_validate_axis(&r->a1);
-    if (rc)
-        return 3;
+    if (rc) return 20 + rc;
     rc = fg_validate_axis(&r->a2);
-    if (rc)
-        return 4;
-    if (r->a1.id == r->a2.id)
-        return 5;
+    if (rc) return 30 + rc;
+    if (r->a1.id == r->a2.id) return 40;
     return 0;
 }
 
-static double *materialize_axis_values(const FG_AxisSpec *a, size_t *n_out)
+/* --------------------------- mapping FG -> DG ---------------------------- */
+
+static DG_AxisID map_axis_id(FG_Axis a)
 {
-    *n_out = 0;
-    if (a->kind == FG_AXIS_VALUES)
+    switch (a)
     {
-        const size_t n = a->n_values;
-        double *v = (double *)malloc(sizeof(double) * n);
-        if (!v)
-            return NULL;
-        memcpy(v, a->values, sizeof(double) * n);
-        *n_out = n;
-        return v;
+        case FG_T: return DG_AXIS_T;
+        case FG_X: return DG_AXIS_X;
+        case FG_Y: return DG_AXIS_Y;
+        case FG_Z: return DG_AXIS_Z;
+        default:   return DG_AXIS_T;
     }
-    else
+}
+
+static DG_AxisKind map_axis_kind(FG_AxisKind k)
+{
+    switch (k)
     {
-        const size_t n = a->n;
-        double *v = (double *)malloc(sizeof(double) * n);
-        if (!v)
-            return NULL;
+        case FG_AXIS_LINSPACE: return DG_AXIS_LINSPACE;
+        case FG_AXIS_VALUES:   return DG_AXIS_VALUES;
+        default:               return DG_AXIS_LINSPACE;
+    }
+}
 
-        const double a0 = a->min;
-        const double b0 = a->max;
-        const double denom = (double)(n - 1);
+static DG_AxisSpec map_axis_spec(const FG_AxisSpec *a)
+{
+    DG_AxisSpec d;
+    memset(&d, 0, sizeof(d));
+    d.id = map_axis_id(a->id);
+    d.kind = map_axis_kind(a->kind);
+    d.name = a->name;
+    d.units = a->units;
+    d.min = a->min;
+    d.max = a->max;
+    d.n = a->n;
+    d.values = a->values;
+    d.n_values = a->n_values;
+    return d;
+}
 
-        for (size_t i = 0; i < n; ++i)
+static DG_FixedCoords map_fixed_1d(const FG_Request1D *r)
+{
+    DG_FixedCoords c;
+    c.t_fs = r->t0_fs;
+    c.x_um = r->x0_um;
+    c.y_um = r->y0_um;
+    c.z_um = r->z0_um;
+    return c;
+}
+
+static DG_FixedCoords map_fixed_2d(const FG_Request2D *r)
+{
+    DG_FixedCoords c;
+    c.t_fs = r->t0_fs;
+    c.x_um = r->x0_um;
+    c.y_um = r->y0_um;
+    c.z_um = r->z0_um;
+    return c;
+}
+
+/* --------------------------- dataset selection --------------------------- */
+
+typedef enum FG_InternalDatasetKind
+{
+    FG_DS_EX = 0,
+    FG_DS_EY = 1,
+    FG_DS_EZ = 2,
+    FG_DS_AX = 3,
+    FG_DS_AY = 4,
+    FG_DS_AZ = 5
+} FG_InternalDatasetKind;
+
+typedef struct FG_EvalCtx
+{
+    const struct LaserPulse *pulse;
+    FG_InternalDatasetKind *kinds; /* length ndatasets, maps output index -> dataset kind */
+} FG_EvalCtx;
+
+static int fg_eval_point(const DG_FixedCoords *coords, void *ctx_void, float *out, size_t ndatasets)
+{
+    FG_EvalCtx *ctx = (FG_EvalCtx *)ctx_void;
+
+    const double t = coords->t_fs;
+    const double r[3] = {coords->x_um, coords->y_um, coords->z_um};
+
+    /* Compute E and/or A only if needed at this point */
+    int need_E = 0, need_A = 0;
+    for (size_t d = 0; d < ndatasets; ++d)
+    {
+        const FG_InternalDatasetKind k = ctx->kinds[d];
+        if (k == FG_DS_EX || k == FG_DS_EY || k == FG_DS_EZ) need_E = 1;
+        if (k == FG_DS_AX || k == FG_DS_AY || k == FG_DS_AZ) need_A = 1;
+    }
+
+    double E[3] = {0.0, 0.0, 0.0};
+    double A[3] = {0.0, 0.0, 0.0};
+
+    if (need_E) LaserPulse_E(ctx->pulse, t, r, E);
+    if (need_A) LaserPulse_A(ctx->pulse, t, r, A);
+
+    for (size_t d = 0; d < ndatasets; ++d)
+    {
+        switch (ctx->kinds[d])
         {
-            const double s = (denom > 0.0) ? ((double)i / denom) : 0.0;
-            v[i] = a0 + (b0 - a0) * s;
+            case FG_DS_EX: out[d] = (float)E[0]; break;
+            case FG_DS_EY: out[d] = (float)E[1]; break;
+            case FG_DS_EZ: out[d] = (float)E[2]; break;
+            case FG_DS_AX: out[d] = (float)A[0]; break;
+            case FG_DS_AY: out[d] = (float)A[1]; break;
+            case FG_DS_AZ: out[d] = (float)A[2]; break;
+            default:       out[d] = (float)NAN;  break;
         }
-        *n_out = n;
-        return v;
     }
+
+    return 0;
 }
 
-static void axis_apply(FG_Axis id, double val, double *t_fs, double r_um[3])
-{
-    switch (id)
-    {
-    case FG_T:
-        *t_fs = val;
-        break;
-    case FG_X:
-        r_um[0] = val;
-        break;
-    case FG_Y:
-        r_um[1] = val;
-        break;
-    case FG_Z:
-        r_um[2] = val;
-        break;
-    default:
-        break;
-    }
-}
-
-static void compute_counts_displs(int size, int n, int *counts, int *displs)
-{
-    const int base = (size > 0) ? (n / size) : 0;
-    const int rem = (size > 0) ? (n % size) : 0;
-
-    int disp = 0;
-    for (int r = 0; r < size; ++r)
-    {
-        const int cnt = base + (r < rem ? 1 : 0);
-        counts[r] = cnt;
-        displs[r] = disp;
-        disp += cnt;
-    }
-}
-
-static size_t count_datasets(uint32_t qmask, uint32_t cmask)
+static size_t count_selected(const FG_Options *opt)
 {
     size_t n = 0;
-    if (qmask & (uint32_t)FG_Q_E)
+
+    const int wantE = ((opt->quantity_mask & (uint32_t)FG_Q_E) != 0u);
+    const int wantA = ((opt->quantity_mask & (uint32_t)FG_Q_A) != 0u);
+
+    if (wantE)
     {
-        if (cmask & (uint32_t)FG_C_X)
-            ++n;
-        if (cmask & (uint32_t)FG_C_Y)
-            ++n;
-        if (cmask & (uint32_t)FG_C_Z)
-            ++n;
+        if (opt->component_mask & (uint32_t)FG_C_X) ++n;
+        if (opt->component_mask & (uint32_t)FG_C_Y) ++n;
+        if (opt->component_mask & (uint32_t)FG_C_Z) ++n;
     }
-    if (qmask & (uint32_t)FG_Q_A)
+    if (wantA)
     {
-        if (cmask & (uint32_t)FG_C_X)
-            ++n;
-        if (cmask & (uint32_t)FG_C_Y)
-            ++n;
-        if (cmask & (uint32_t)FG_C_Z)
-            ++n;
+        if (opt->component_mask & (uint32_t)FG_C_X) ++n;
+        if (opt->component_mask & (uint32_t)FG_C_Y) ++n;
+        if (opt->component_mask & (uint32_t)FG_C_Z) ++n;
     }
     return n;
 }
 
-static void fill_datasets(uint32_t qmask, uint32_t cmask,
-                          const char **names,
-                          const char **units,
-                          const char **long_names)
+static void fill_dataset_desc(DG_DatasetDesc *ds,
+                              FG_InternalDatasetKind kind,
+                              char *name_buf,
+                              size_t name_bufsz,
+                              char *suffix_buf,
+                              size_t suffix_bufsz)
 {
-    size_t k = 0;
+    /* Dataset names and suffixes */
+    const char *units = NULL;
 
-    if (qmask & (uint32_t)FG_Q_E)
+    switch (kind)
     {
-        if (cmask & (uint32_t)FG_C_X)
-        {
-            names[k] = "Ex";
-            units[k] = "GV/m";
-            long_names[k] = "E_x";
-            ++k;
-        }
-        if (cmask & (uint32_t)FG_C_Y)
-        {
-            names[k] = "Ey";
-            units[k] = "GV/m";
-            long_names[k] = "E_y";
-            ++k;
-        }
-        if (cmask & (uint32_t)FG_C_Z)
-        {
-            names[k] = "Ez";
-            units[k] = "GV/m";
-            long_names[k] = "E_z";
-            ++k;
-        }
+        case FG_DS_EX: snprintf(name_buf, name_bufsz, "Ex"); units = "GV/m"; break;
+        case FG_DS_EY: snprintf(name_buf, name_bufsz, "Ey"); units = "GV/m"; break;
+        case FG_DS_EZ: snprintf(name_buf, name_bufsz, "Ez"); units = "GV/m"; break;
+        case FG_DS_AX: snprintf(name_buf, name_bufsz, "Ax"); units = "a.u."; break;
+        case FG_DS_AY: snprintf(name_buf, name_bufsz, "Ay"); units = "a.u."; break;
+        case FG_DS_AZ: snprintf(name_buf, name_bufsz, "Az"); units = "a.u."; break;
+        default:       snprintf(name_buf, name_bufsz, "unknown"); units = ""; break;
     }
-    if (qmask & (uint32_t)FG_Q_A)
-    {
-        if (cmask & (uint32_t)FG_C_X)
-        {
-            names[k] = "Ax";
-            units[k] = "a.u.";
-            long_names[k] = "A_x";
-            ++k;
-        }
-        if (cmask & (uint32_t)FG_C_Y)
-        {
-            names[k] = "Ay";
-            units[k] = "a.u.";
-            long_names[k] = "A_y";
-            ++k;
-        }
-        if (cmask & (uint32_t)FG_C_Z)
-        {
-            names[k] = "Az";
-            units[k] = "a.u.";
-            long_names[k] = "A_z";
-            ++k;
-        }
-    }
+
+    snprintf(suffix_buf, suffix_bufsz, "_%s.h5", name_buf);
+
+    ds->dset_name = name_buf;
+    ds->label = name_buf;
+    ds->units = units;
+    ds->file_suffix = suffix_buf;
 }
 
-static DiagAxis make_diag_axis(const FG_AxisSpec *spec, const double *vals, size_t n)
+/* Build dataset list and evaluation map.
+ * Caller owns returned arrays and must free:
+ *   - desc
+ *   - kinds
+ *   - name_store (array of char*)
+ *   - suffix_store (array of char*)
+ */
+static int build_datasets(const FG_Options *opt,
+                          DG_DatasetDesc **desc_out,
+                          FG_InternalDatasetKind **kinds_out,
+                          char ***name_store_out,
+                          char ***suffix_store_out,
+                          size_t *ndatasets_out)
 {
-    DiagAxis a = (DiagAxis){0};
-    a.id = (spec->id == FG_T ? DIAG_AXIS_T : (spec->id == FG_X ? DIAG_AXIS_X : (spec->id == FG_Y ? DIAG_AXIS_Y : DIAG_AXIS_Z)));
-    a.long_name = spec->name;
-    a.units = spec->units;
-    a.vmin = (n > 0) ? vals[0] : 0.0;
-    a.vmax = (n > 0) ? vals[n - 1] : 0.0;
-    return a;
-}
+    *desc_out = NULL;
+    *kinds_out = NULL;
+    *name_store_out = NULL;
+    *suffix_store_out = NULL;
+    *ndatasets_out = 0;
 
-/* Write one dataset either into a single shared file or as split file. */
-static int write_dataset_1d(const FG_Options *opt,
-                            const char *path_or_prefix,
-                            const char *dset_name, const char *dset_units, const char *label,
-                            const float *data, size_t n1,
-                            const DiagAxis *axis1,
-                            const DiagFixedCoords *fixed)
-{
-    const double time = 0.0;
-    const int iter = 0;
+    const size_t nd = count_selected(opt);
+    if (nd == 0) return 1;
 
-    if (opt->write_mode == FG_WRITE_SINGLE_FILE)
+    DG_DatasetDesc *desc = (DG_DatasetDesc *)calloc(nd, sizeof(DG_DatasetDesc));
+    FG_InternalDatasetKind *kinds = (FG_InternalDatasetKind *)calloc(nd, sizeof(FG_InternalDatasetKind));
+    char **name_store = (char **)calloc(nd, sizeof(char *));
+    char **suffix_store = (char **)calloc(nd, sizeof(char *));
+    if (!desc || !kinds || !name_store || !suffix_store)
     {
-        return diag_h5_write_grid_1d(path_or_prefix,
-                                     dset_name, dset_units, label,
-                                     time, iter,
-                                     data, n1,
-                                     axis1, fixed);
+        free(desc); free(kinds); free(name_store); free(suffix_store);
+        return 2;
     }
-    else
+
+    for (size_t i = 0; i < nd; ++i)
     {
-        char path[512];
-        snprintf(path, sizeof(path), "%s_%s.h5", path_or_prefix, dset_name);
-        return diag_h5_write_grid_1d(path,
-                                     dset_name, dset_units, label,
-                                     time, iter,
-                                     data, n1,
-                                     axis1, fixed);
-    }
-}
-
-static int write_dataset_2d(const FG_Options *opt,
-                            const char *path_or_prefix,
-                            const char *dset_name, const char *dset_units, const char *label,
-                            const float *data, size_t n1, size_t n2,
-                            const DiagAxis *axis1, const DiagAxis *axis2,
-                            const DiagFixedCoords *fixed)
-{
-    const double time = 0.0;
-    const int iter = 0;
-
-    if (opt->write_mode == FG_WRITE_SINGLE_FILE)
-    {
-        return diag_h5_write_grid_2d(path_or_prefix,
-                                     dset_name, dset_units, label,
-                                     time, iter,
-                                     data, n1, n2,
-                                     axis1, axis2, fixed);
-    }
-    else
-    {
-        char path[512];
-        snprintf(path, sizeof(path), "%s_%s.h5", path_or_prefix, dset_name);
-        return diag_h5_write_grid_2d(path,
-                                     dset_name, dset_units, label,
-                                     time, iter,
-                                     data, n1, n2,
-                                     axis1, axis2,
-                                     fixed);
-    }
-}
-
-/* ------------------------------ core kernels ------------------------------ */
-
-static int run_generic_1d(const struct LaserPulse *pulse,
-                          const FG_Request1D *req,
-                          const FG_Options *opt,
-                          const char *path_or_prefix,
-                          MPI_Comm comm)
-{
-    int rank = 0, size = 1;
-    MPI_Comm_rank(comm, &rank);
-    MPI_Comm_size(comm, &size);
-
-    const int root = opt->root_rank;
-
-    size_t n1 = 0;
-    double *a1 = materialize_axis_values(&req->a1, &n1);
-    if (!a1)
-        return 10;
-
-    const uint32_t qmask = opt->quantity_mask;
-    const uint32_t cmask = opt->component_mask;
-    const size_t nds = count_datasets(qmask, cmask);
-
-    const char **names = (const char **)calloc(nds, sizeof(char *));
-    const char **units = (const char **)calloc(nds, sizeof(char *));
-    const char **longn = (const char **)calloc(nds, sizeof(char *));
-    if (!names || !units || !longn)
-    {
-        free(a1);
-        free(names);
-        free(units);
-        free(longn);
-        return 11;
-    }
-    fill_datasets(qmask, cmask, names, units, longn);
-
-    /* Decompose along the 1D index */
-    int *counts = (int *)calloc((size_t)size, sizeof(int));
-    int *displs = (int *)calloc((size_t)size, sizeof(int));
-    if (!counts || !displs)
-    {
-        free(a1);
-        free(names);
-        free(units);
-        free(longn);
-        free(counts);
-        free(displs);
-        return 12;
-    }
-    compute_counts_displs(size, (int)n1, counts, displs);
-
-    const int local_n = counts[rank];
-    const int local_0 = displs[rank];
-
-    /* local buffers: nds arrays of length local_n */
-    float **local = (float **)calloc(nds, sizeof(float *));
-    if (!local)
-    {
-        free(a1);
-        free(names);
-        free(units);
-        free(longn);
-        free(counts);
-        free(displs);
-        return 13;
-    }
-    for (size_t k = 0; k < nds; ++k)
-    {
-        local[k] = (float *)malloc(sizeof(float) * (size_t)local_n);
-        if (!local[k])
+        name_store[i] = (char *)calloc(16, 1);
+        suffix_store[i] = (char *)calloc(32, 1);
+        if (!name_store[i] || !suffix_store[i])
         {
-            for (size_t j = 0; j < k; ++j)
-                free(local[j]);
-            free(local);
-            free(a1);
-            free(names);
-            free(units);
-            free(longn);
-            free(counts);
-            free(displs);
-            return 14;
-        }
-    }
-
-    /* Evaluate */
-    for (int il = 0; il < local_n; ++il)
-    {
-        const size_t i = (size_t)(local_0 + il);
-
-        double t_fs = req->t0_fs;
-        double r_um[3] = {req->x0_um, req->y0_um, req->z0_um};
-        axis_apply(req->a1.id, a1[i], &t_fs, r_um);
-
-        double E[3] = {0, 0, 0};
-        double A[3] = {0, 0, 0};
-
-        if (qmask & (uint32_t)FG_Q_E)
-            LaserPulse_E(pulse, t_fs, r_um, E);
-        if (qmask & (uint32_t)FG_Q_A)
-            LaserPulse_A(pulse, t_fs, r_um, A);
-
-        size_t k = 0;
-        if (qmask & (uint32_t)FG_Q_E)
-        {
-            if (cmask & (uint32_t)FG_C_X)
-                local[k++][il] = (float)E[0];
-            if (cmask & (uint32_t)FG_C_Y)
-                local[k++][il] = (float)E[1];
-            if (cmask & (uint32_t)FG_C_Z)
-                local[k++][il] = (float)E[2];
-        }
-        if (qmask & (uint32_t)FG_Q_A)
-        {
-            if (cmask & (uint32_t)FG_C_X)
-                local[k++][il] = (float)A[0];
-            if (cmask & (uint32_t)FG_C_Y)
-                local[k++][il] = (float)A[1];
-            if (cmask & (uint32_t)FG_C_Z)
-                local[k++][il] = (float)A[2];
-        }
-    }
-
-    /* Root receives full buffers and writes */
-    float **full = NULL;
-    if (rank == root)
-    {
-        full = (float **)calloc(nds, sizeof(float *));
-        if (!full)
-        {
-            for (size_t k = 0; k < nds; ++k)
-                free(local[k]);
-            free(local);
-            free(a1);
-            free(names);
-            free(units);
-            free(longn);
-            free(counts);
-            free(displs);
-            return 15;
-        }
-        for (size_t k = 0; k < nds; ++k)
-        {
-            full[k] = (float *)malloc(sizeof(float) * n1);
-            if (!full[k])
+            for (size_t k = 0; k <= i; ++k)
             {
-                for (size_t j = 0; j < k; ++j)
-                    free(full[j]);
-                free(full);
-                for (size_t kk = 0; kk < nds; ++kk)
-                    free(local[kk]);
-                free(local);
-                free(a1);
-                free(names);
-                free(units);
-                free(longn);
-                free(counts);
-                free(displs);
-                return 16;
+                free(name_store[k]);
+                free(suffix_store[k]);
             }
+            free(desc); free(kinds); free(name_store); free(suffix_store);
+            return 3;
         }
     }
 
-    int gather_err = 0;
-    for (size_t k = 0; k < nds; ++k)
+    size_t j = 0;
+    const int wantE = ((opt->quantity_mask & (uint32_t)FG_Q_E) != 0u);
+    const int wantA = ((opt->quantity_mask & (uint32_t)FG_Q_A) != 0u);
+
+    if (wantE)
     {
-        int rc = MPI_Gatherv(local[k], local_n, MPI_FLOAT,
-                             (rank == root) ? full[k] : NULL,
-                             counts, displs, MPI_FLOAT,
-                             root, comm);
-        if (rc != MPI_SUCCESS)
-            gather_err = 1;
+        if (opt->component_mask & (uint32_t)FG_C_X) kinds[j++] = FG_DS_EX;
+        if (opt->component_mask & (uint32_t)FG_C_Y) kinds[j++] = FG_DS_EY;
+        if (opt->component_mask & (uint32_t)FG_C_Z) kinds[j++] = FG_DS_EZ;
     }
-    int gather_err_all = 0;
-    MPI_Allreduce(&gather_err, &gather_err_all, 1, MPI_INT, MPI_MAX, comm);
-
-    /* free locals */
-    for (size_t k = 0; k < nds; ++k)
-        free(local[k]);
-    free(local);
-    free(counts);
-    free(displs);
-
-    if (gather_err_all)
+    if (wantA)
     {
-        if (rank == root)
-        {
-            for (size_t k = 0; k < nds; ++k)
-                free(full[k]);
-            free(full);
-        }
-        free(a1);
-        free(names);
-        free(units);
-        free(longn);
-        return 17;
+        if (opt->component_mask & (uint32_t)FG_C_X) kinds[j++] = FG_DS_AX;
+        if (opt->component_mask & (uint32_t)FG_C_Y) kinds[j++] = FG_DS_AY;
+        if (opt->component_mask & (uint32_t)FG_C_Z) kinds[j++] = FG_DS_AZ;
     }
 
-    if (rank == root)
-    {
-        DiagAxis axis1 = make_diag_axis(&req->a1, a1, n1);
+    for (size_t i = 0; i < nd; ++i)
+        fill_dataset_desc(&desc[i], kinds[i], name_store[i], 16, suffix_store[i], 32);
 
-        DiagFixedCoords fixed = (DiagFixedCoords){
-            .t = req->t0_fs,
-            .x = req->x0_um,
-            .y = req->y0_um,
-            .z = req->z0_um};
+    *desc_out = desc;
+    *kinds_out = kinds;
+    *name_store_out = name_store;
+    *suffix_store_out = suffix_store;
+    *ndatasets_out = nd;
 
-        for (size_t k = 0; k < nds; ++k)
-        {
-            int rc = write_dataset_1d(opt, path_or_prefix,
-                                      names[k], units[k], longn[k],
-                                      full[k], n1,
-                                      &axis1, &fixed);
-            if (rc != 0)
-            {
-                for (size_t j = 0; j < nds; ++j)
-                    free(full[j]);
-                free(full);
-                free(a1);
-                free(names);
-                free(units);
-                free(longn);
-                return 18;
-            }
-        }
-
-        for (size_t k = 0; k < nds; ++k)
-            free(full[k]);
-        free(full);
-    }
-
-    free(a1);
-    free(names);
-    free(units);
-    free(longn);
     return 0;
 }
 
-static int run_generic_2d(const struct LaserPulse *pulse,
-                          const FG_Request2D *req,
-                          const FG_Options *opt,
-                          const char *path_or_prefix,
-                          MPI_Comm comm)
+static void free_datasets(DG_DatasetDesc *desc,
+                          FG_InternalDatasetKind *kinds,
+                          char **name_store,
+                          char **suffix_store,
+                          size_t nd)
 {
-    int rank = 0, size = 1;
-    MPI_Comm_rank(comm, &rank);
-    MPI_Comm_size(comm, &size);
+    (void)desc;
+    free(kinds);
 
-    const int root = opt->root_rank;
-
-    size_t n1 = 0, n2 = 0;
-    double *a1 = materialize_axis_values(&req->a1, &n1);
-    double *a2 = materialize_axis_values(&req->a2, &n2);
-    if (!a1 || !a2)
+    if (name_store)
     {
-        free(a1);
-        free(a2);
-        return 20;
+        for (size_t i = 0; i < nd; ++i) free(name_store[i]);
+        free(name_store);
     }
-
-    const uint32_t qmask = opt->quantity_mask;
-    const uint32_t cmask = opt->component_mask;
-    const size_t nds = count_datasets(qmask, cmask);
-
-    const char **names = (const char **)calloc(nds, sizeof(char *));
-    const char **units = (const char **)calloc(nds, sizeof(char *));
-    const char **longn = (const char **)calloc(nds, sizeof(char *));
-    if (!names || !units || !longn)
+    if (suffix_store)
     {
-        free(a1);
-        free(a2);
-        free(names);
-        free(units);
-        free(longn);
-        return 21;
+        for (size_t i = 0; i < nd; ++i) free(suffix_store[i]);
+        free(suffix_store);
     }
-    fill_datasets(qmask, cmask, names, units, longn);
-
-    /* Flattened grid index: i = i1 + n1*i2  (axis1 fastest) */
-    const size_t ngrid = n1 * n2;
-
-    int *counts = (int *)calloc((size_t)size, sizeof(int));
-    int *displs = (int *)calloc((size_t)size, sizeof(int));
-    if (!counts || !displs)
-    {
-        free(a1);
-        free(a2);
-        free(names);
-        free(units);
-        free(longn);
-        free(counts);
-        free(displs);
-        return 22;
-    }
-    compute_counts_displs(size, (int)ngrid, counts, displs);
-
-    const int local_n = counts[rank];
-    const int local_0 = displs[rank];
-
-    float **local = (float **)calloc(nds, sizeof(float *));
-    if (!local)
-    {
-        free(a1);
-        free(a2);
-        free(names);
-        free(units);
-        free(longn);
-        free(counts);
-        free(displs);
-        return 23;
-    }
-    for (size_t k = 0; k < nds; ++k)
-    {
-        local[k] = (float *)malloc(sizeof(float) * (size_t)local_n);
-        if (!local[k])
-        {
-            for (size_t j = 0; j < k; ++j)
-                free(local[j]);
-            free(local);
-            free(a1);
-            free(a2);
-            free(names);
-            free(units);
-            free(longn);
-            free(counts);
-            free(displs);
-            return 24;
-        }
-    }
-
-    for (int il = 0; il < local_n; ++il)
-    {
-        const size_t ig = (size_t)(local_0 + il);
-        const size_t i1 = ig % n1;
-        const size_t i2 = ig / n1;
-
-        double t_fs = req->t0_fs;
-        double r_um[3] = {req->x0_um, req->y0_um, req->z0_um};
-
-        axis_apply(req->a1.id, a1[i1], &t_fs, r_um);
-        axis_apply(req->a2.id, a2[i2], &t_fs, r_um);
-
-        double E[3] = {0, 0, 0};
-        double A[3] = {0, 0, 0};
-
-        if (qmask & (uint32_t)FG_Q_E)
-            LaserPulse_E(pulse, t_fs, r_um, E);
-        if (qmask & (uint32_t)FG_Q_A)
-            LaserPulse_A(pulse, t_fs, r_um, A);
-
-        size_t k = 0;
-        if (qmask & (uint32_t)FG_Q_E)
-        {
-            if (cmask & (uint32_t)FG_C_X)
-                local[k++][il] = (float)E[0];
-            if (cmask & (uint32_t)FG_C_Y)
-                local[k++][il] = (float)E[1];
-            if (cmask & (uint32_t)FG_C_Z)
-                local[k++][il] = (float)E[2];
-        }
-        if (qmask & (uint32_t)FG_Q_A)
-        {
-            if (cmask & (uint32_t)FG_C_X)
-                local[k++][il] = (float)A[0];
-            if (cmask & (uint32_t)FG_C_Y)
-                local[k++][il] = (float)A[1];
-            if (cmask & (uint32_t)FG_C_Z)
-                local[k++][il] = (float)A[2];
-        }
-    }
-
-    float **full = NULL;
-    if (rank == root)
-    {
-        full = (float **)calloc(nds, sizeof(float *));
-        if (!full)
-        {
-            for (size_t k = 0; k < nds; ++k)
-                free(local[k]);
-            free(local);
-            free(a1);
-            free(a2);
-            free(names);
-            free(units);
-            free(longn);
-            free(counts);
-            free(displs);
-            return 25;
-        }
-        for (size_t k = 0; k < nds; ++k)
-        {
-            full[k] = (float *)malloc(sizeof(float) * ngrid);
-            if (!full[k])
-            {
-                for (size_t j = 0; j < k; ++j)
-                    free(full[j]);
-                free(full);
-                for (size_t kk = 0; kk < nds; ++kk)
-                    free(local[kk]);
-                free(local);
-                free(a1);
-                free(a2);
-                free(names);
-                free(units);
-                free(longn);
-                free(counts);
-                free(displs);
-                return 26;
-            }
-        }
-    }
-
-    int gather_err = 0;
-    for (size_t k = 0; k < nds; ++k)
-    {
-        int rc = MPI_Gatherv(local[k], local_n, MPI_FLOAT,
-                             (rank == root) ? full[k] : NULL,
-                             counts, displs, MPI_FLOAT,
-                             root, comm);
-        if (rc != MPI_SUCCESS)
-            gather_err = 1;
-    }
-    int gather_err_all = 0;
-    MPI_Allreduce(&gather_err, &gather_err_all, 1, MPI_INT, MPI_MAX, comm);
-
-    for (size_t k = 0; k < nds; ++k)
-        free(local[k]);
-    free(local);
-    free(counts);
-    free(displs);
-
-    if (gather_err_all)
-    {
-        if (rank == root)
-        {
-            for (size_t k = 0; k < nds; ++k)
-                free(full[k]);
-            free(full);
-        }
-        free(a1);
-        free(a2);
-        free(names);
-        free(units);
-        free(longn);
-        return 27;
-    }
-
-    if (rank == root)
-    {
-        DiagAxis axis1 = make_diag_axis(&req->a1, a1, n1);
-        DiagAxis axis2 = make_diag_axis(&req->a2, a2, n2);
-
-        DiagFixedCoords fixed = (DiagFixedCoords){
-            .t = req->t0_fs,
-            .x = req->x0_um,
-            .y = req->y0_um,
-            .z = req->z0_um};
-
-        for (size_t k = 0; k < nds; ++k)
-        {
-            int rc = write_dataset_2d(opt, path_or_prefix,
-                                      names[k], units[k], longn[k],
-                                      full[k], n1, n2,
-                                      &axis1, &axis2, &fixed);
-            if (rc != 0)
-            {
-                for (size_t j = 0; j < nds; ++j)
-                    free(full[j]);
-                free(full);
-                free(a1);
-                free(a2);
-                free(names);
-                free(units);
-                free(longn);
-                return 28;
-            }
-        }
-
-        for (size_t k = 0; k < nds; ++k)
-            free(full[k]);
-        free(full);
-    }
-
-    free(a1);
-    free(a2);
-    free(names);
-    free(units);
-    free(longn);
-    return 0;
+    free(desc);
 }
 
-/* ------------------------------ public API -------------------------------- */
+/* ------------------------------- public run ------------------------------ */
 
 int fg_run_1d(const struct LaserPulse *pulse,
               const FG_Request1D *req,
@@ -808,11 +349,42 @@ int fg_run_1d(const struct LaserPulse *pulse,
               const char *path_or_prefix,
               MPI_Comm comm)
 {
-    if (!pulse || !req || !opt || !path_or_prefix)
-        return 1;
-    if (fg_validate_request_1d(req, opt) != 0)
+    if (!pulse || !req || !opt || !path_or_prefix) return 1;
+
+    const int vrc = fg_validate_request_1d(req, opt);
+    if (vrc) return 100 + vrc;
+
+    if (opt->write_mode == FG_WRITE_SINGLE_FILE)
+    {
+        /* Not supported with current diag_h5 API (would overwrite with TRUNC). */
         return 2;
-    return run_generic_1d(pulse, req, opt, path_or_prefix, comm);
+    }
+
+    DG_Request1D dreq;
+    dreq.a1 = map_axis_spec(&req->a1);
+    dreq.fixed = map_fixed_1d(req);
+
+    DG_RunOptions ropt = dg_default_run_options();
+    ropt.root_rank = opt->root_rank;
+    ropt.write_time_iter_0 = 1;
+
+    DG_DatasetDesc *desc = NULL;
+    FG_InternalDatasetKind *kinds = NULL;
+    char **name_store = NULL;
+    char **suffix_store = NULL;
+    size_t nd = 0;
+
+    int rc = build_datasets(opt, &desc, &kinds, &name_store, &suffix_store, &nd);
+    if (rc) return 200 + rc;
+
+    FG_EvalCtx ctx;
+    ctx.pulse = pulse;
+    ctx.kinds = kinds;
+
+    rc = dg_run_1d(&dreq, desc, nd, fg_eval_point, &ctx, &ropt, path_or_prefix, comm);
+
+    free_datasets(desc, kinds, name_store, suffix_store, nd);
+    return rc;
 }
 
 int fg_run_2d(const struct LaserPulse *pulse,
@@ -821,9 +393,42 @@ int fg_run_2d(const struct LaserPulse *pulse,
               const char *path_or_prefix,
               MPI_Comm comm)
 {
-    if (!pulse || !req || !opt || !path_or_prefix)
-        return 1;
-    if (fg_validate_request_2d(req, opt) != 0)
+    if (!pulse || !req || !opt || !path_or_prefix) return 1;
+
+    const int vrc = fg_validate_request_2d(req, opt);
+    if (vrc) return 100 + vrc;
+
+    if (opt->write_mode == FG_WRITE_SINGLE_FILE)
+    {
+        /* Not supported with current diag_h5 API (would overwrite with TRUNC). */
         return 2;
-    return run_generic_2d(pulse, req, opt, path_or_prefix, comm);
+    }
+
+    DG_Request2D dreq;
+    dreq.a1 = map_axis_spec(&req->a1);
+    dreq.a2 = map_axis_spec(&req->a2);
+    dreq.fixed = map_fixed_2d(req);
+
+    DG_RunOptions ropt = dg_default_run_options();
+    ropt.root_rank = opt->root_rank;
+    ropt.write_time_iter_0 = 1;
+
+    DG_DatasetDesc *desc = NULL;
+    FG_InternalDatasetKind *kinds = NULL;
+    char **name_store = NULL;
+    char **suffix_store = NULL;
+    size_t nd = 0;
+
+    int rc = build_datasets(opt, &desc, &kinds, &name_store, &suffix_store, &nd);
+    if (rc) return 200 + rc;
+
+    FG_EvalCtx ctx;
+    ctx.pulse = pulse;
+    ctx.kinds = kinds;
+
+    rc = dg_run_2d(&dreq, desc, nd, fg_eval_point, &ctx, &ropt, path_or_prefix, comm);
+
+    free_datasets(desc, kinds, name_store, suffix_store, nd);
+    return rc;
 }
+

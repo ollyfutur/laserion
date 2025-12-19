@@ -4,6 +4,10 @@
 
 #include "diag_h5.h"
 
+#ifndef M_PI
+#define M_PI 3.141592653589793238462643383279502884
+#endif
+
 /* ---------------- grid fillers ---------------- */
 
 static void fill_1d(float *out, size_t n, double xmin, double xmax)

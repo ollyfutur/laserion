@@ -1,6 +1,6 @@
 #include <math.h>
 #include <string.h>
-#include "core.h"
+#include "laser.h"
 
 /* ---------------- vector helpers ---------------- */
 

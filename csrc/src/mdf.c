@@ -3,22 +3,13 @@
 #include <math.h>
 
 #include "mdf.h"
-#include "core.h"             /* for SinglePulse layout if you use dt default */
+#include "laser.h"             /* for SinglePulse layout if you use dt default */
 #include "ionization_model.h" /* ADKModel */
+#include "ionization.h"       /* ION_compute_timeseries */
 
 /* ---------- internal helpers ---------- */
 
 static int is_finite(double x) { return isfinite(x) != 0; }
-
-static void cumulative_trapezoid_1d(const double *y, const double *t, size_t N, double *out_int)
-{
-    out_int[0] = 0.0;
-    for (size_t i = 1; i < N; ++i)
-    {
-        const double dt = t[i] - t[i - 1];
-        out_int[i] = out_int[i - 1] + 0.5 * (y[i - 1] + y[i]) * dt;
-    }
-}
 
 static void cumulative_trapezoid_vec3(const double y[][3], const double *t, size_t N, double out_int[][3])
 {
@@ -158,8 +149,7 @@ int MDF_build(MDF *m,
     for (size_t i = 0; i < N; ++i)
     {
         double Ei[3];
-        /* If your LaserPulse_E signature accepts const, remove this cast. */
-        LaserPulse_E((LaserPulse *)pulse, m->t[i], m->r, Ei);
+        LaserPulse_E(pulse, m->t[i], m->r, Ei);
 
         Egrid_mut[i][0] = Ei[0];
         Egrid_mut[i][1] = Ei[1];
@@ -196,64 +186,22 @@ int MDF_build(MDF *m,
         return 9;
     }
 
-    /* dt_local: last equals previous (Python behavior) */
-    double *dt_local = (double *)malloc(N * sizeof(double));
-    if (!dt_local)
+    /* Ionization time integration (delegated to ionization.c). */
+    const int ion_rc = ION_compute_timeseries(m->ion_model,
+                                             species,
+                                             m->Z_list, nZ,
+                                             m->t, N,
+                                             m->E_abs,
+                                             m->w,
+                                             m->S,
+                                             m->dP,
+                                             m->P_ion_levels,
+                                             &m->P_ion_total);
+    if (ion_rc != 0)
     {
         MDF_destroy(m);
         return 10;
     }
-    for (size_t i = 0; i + 1 < N; ++i)
-        dt_local[i] = m->t[i + 1] - m->t[i];
-    dt_local[N - 1] = dt_local[N - 2];
-
-    double *Wint = (double *)malloc(N * sizeof(double));
-    if (!Wint)
-    {
-        free(dt_local);
-        MDF_destroy(m);
-        return 11;
-    }
-
-    m->P_ion_total = 0.0;
-
-    for (size_t iz = 0; iz < nZ; ++iz)
-    {
-        const int Z = m->Z_list[iz];
-
-        /* w(t) */
-        for (size_t i = 0; i < N; ++i)
-        {
-            double wi = IonizationModel_rate((IonizationModel *)m->ion_model, m->E_abs[i], species, Z);
-            if (!(wi >= 0.0) || !isfinite(wi))
-                wi = 0.0;
-            m->w[iz * N + i] = wi;
-        }
-
-        /* Wint(t) = ∫ w dt */
-        cumulative_trapezoid_1d(&m->w[iz * N], m->t, N, Wint);
-
-        /* S(t) = exp(-Wint) */
-        for (size_t i = 0; i < N; ++i)
-        {
-            m->S[iz * N + i] = exp(-Wint[i]);
-        }
-
-        /* dP = w * S * dt_local; P_ion = sum */
-        double P_ion = 0.0;
-        for (size_t i = 0; i < N; ++i)
-        {
-            const double dpi = m->w[iz * N + i] * m->S[iz * N + i] * dt_local[i];
-            m->dP[iz * N + i] = dpi;
-            P_ion += dpi;
-        }
-
-        m->P_ion_levels[iz] = P_ion;
-        m->P_ion_total += P_ion;
-    }
-
-    free(Wint);
-    free(dt_local);
 
     return 0;
 }
@@ -281,3 +229,4 @@ void MDF_destroy(MDF *m)
 
     memset(m, 0, sizeof(*m));
 }
+
