@@ -3,8 +3,8 @@
 # ==============================
 
 [grid]
-t_min = -200.0
-t_max =  200.0
+t_min = -20.0
+t_max =  20.0
 dt = 0.02
 
 # 1D: "x","y","z" ; 2D: "xy","xz","yz" (and permutations)
@@ -16,11 +16,11 @@ fixed = { x = 0.0, y = 0.0, z = 0.0 }
 # ax1 corresponds to first letter in spatial_axes, ax2 to second letter (if present)
 ax1_min = -2.0
 ax1_max =  2.0
-dx1     =  0.1
+dx1     =  0.02
 
 ax2_min = -1.0
 ax2_max =  1.0
-dx2      = 0.1
+dx2      = 0.02
 # For 1D, omit ax2_*.
 
 # =========================

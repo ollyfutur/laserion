@@ -329,11 +329,11 @@ static const char *axis_name_osiris(Axis a)
     switch (a)
     {
     case AXIS_X:
-        return "x1";
+        return "x";
     case AXIS_Y:
-        return "x2";
+        return "y";
     case AXIS_Z:
-        return "x3";
+        return "z";
     default:
         return "?";
     }
@@ -344,11 +344,11 @@ static const char *axis_long_name_osiris(Axis a)
     switch (a)
     {
     case AXIS_X:
-        return "x_1";
+        return "x";
     case AXIS_Y:
-        return "x_2";
+        return "y";
     case AXIS_Z:
-        return "x_3";
+        return "z";
     default:
         return "?";
     }
@@ -406,10 +406,16 @@ static int create_single_dataset_file(hid_t *out_f, hid_t *out_dset,
         h5_write_attr_string1(f, "TYPE", "grid");
         h5_write_attr_string1(f, "NAME", component_name);
         h5_write_attr_string1(f, "LABEL", component_name);
-        h5_write_attr_string1(f, "UNITS", "a.u.");
+        /* Units: E in GV/m, A in GV/m fs */
+        if (component_name && component_name[0] == 'E')
+            h5_write_attr_string1(f, "UNITS", "GV/m");
+        else if (component_name && component_name[0] == 'A')
+            h5_write_attr_string1(f, "UNITS", "GV/m fs");
+        else
+            h5_write_attr_string1(f, "UNITS", "a.u.");
 
         h5_write_attr_int1(f, "ITER", 0);
-        h5_write_attr_double1(f, "TIME", g->t_min);
+        h5_write_attr_double1(f, "TIME", 0.0);
         h5_write_attr_string1(f, "TIME UNITS", "fs");
         h5_write_attr_double1(f, "OFFSET_T", 0.0);
 
@@ -434,14 +440,14 @@ static int create_single_dataset_file(hid_t *out_f, hid_t *out_dset,
             }
             else /* nd == 3 */
             {
-                /* Inverse of dataset order (t, ax1, ax2) -> (ax2, ax1, t) */
+                /* Dataset on disk is (ax2, ax1, t): AXIS1=ax2, AXIS2=ax1, AXIS3=t */
                 osiris_write_axis_dataset(g_axis, 1,
-                                          axis_name_osiris(g->ax1), axis_long_name_osiris(g->ax1),
-                                          "um", g->ax1_min, g->ax1_max);
+                                          axis_name_osiris(g->ax2), axis_long_name_osiris(g->ax2),
+                                          "\\mu m", g->ax2_min, g->ax2_max);
 
                 osiris_write_axis_dataset(g_axis, 2,
-                                          axis_name_osiris(g->ax2), axis_long_name_osiris(g->ax2),
-                                          "um", g->ax2_min, g->ax2_max);
+                                          axis_name_osiris(g->ax1), axis_long_name_osiris(g->ax1),
+                                          "\\mu m", g->ax1_min, g->ax1_max);
 
                 osiris_write_axis_dataset(g_axis, 3, "t", "t", "fs", g->t_min, g->t_max);
             }
@@ -469,8 +475,8 @@ static int create_single_dataset_file(hid_t *out_f, hid_t *out_dset,
                 else
                 {
                     /* dataset dims are (t, ax1, ax2) -> AXIS order is (ax2, ax1, t) */
-                    nx[0] = (int)dims[1];
-                    nx[1] = (int)dims[2];
+                    nx[0] = (int)dims[2];
+                    nx[1] = (int)dims[1];
                     nx[2] = (int)dims[0];
                 }
 
@@ -501,10 +507,10 @@ static int create_single_dataset_file(hid_t *out_f, hid_t *out_dset,
                 else
                 {
                     /* (ax2, ax1, t) */
-                    xmin[0] = g->ax1_min;
-                    xmax[0] = g->ax1_max;
-                    xmin[1] = g->ax2_min;
-                    xmax[1] = g->ax2_max;
+                    xmin[0] = g->ax2_min;
+                    xmax[0] = g->ax2_max;
+                    xmin[1] = g->ax1_min;
+                    xmax[1] = g->ax1_max;
                     xmin[2] = g->t_min;
                     xmax[2] = g->t_max;
                 }
