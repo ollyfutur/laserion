@@ -14,12 +14,12 @@ fixed = { x = 0.0, y = 0.0, z = 0.0 }
 
 # Axis definitions:
 # ax1 corresponds to first letter in spatial_axes, ax2 to second letter (if present)
-ax1_min = -5.0
-ax1_max =  5.0
+ax1_min = -2.0
+ax1_max =  2.0
 dx1     =  0.1
 
-ax2_min = -5.0
-ax2_max =  5.0
+ax2_min = -1.0
+ax2_max =  1.0
 dx2      = 0.1
 # For 1D, omit ax2_*.
 

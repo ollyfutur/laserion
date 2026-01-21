@@ -231,163 +231,6 @@ static int h5_write_attr_int(hid_t obj, const char *name, int v)
     return (st < 0) ? 3 : 0;
 }
 
-/* --- OSIRIS-style attribute helpers (1-element arrays and string arrays) --- */
-static int h5_write_attr_str_array(hid_t obj, const char *name, int n, const char *const *vals)
-{
-    hid_t dtype = H5Tcopy(H5T_C_S1);
-    if (dtype < 0)
-        return 1;
-    if (H5Tset_size(dtype, H5T_VARIABLE) < 0)
-    {
-        H5Tclose(dtype);
-        return 2;
-    }
-
-    hsize_t dims[1] = {(hsize_t)n};
-    hid_t space = H5Screate_simple(1, dims, NULL);
-    if (space < 0)
-    {
-        H5Tclose(dtype);
-        return 3;
-    }
-
-    hid_t attr = H5Acreate2(obj, name, dtype, space, H5P_DEFAULT, H5P_DEFAULT);
-    if (attr < 0)
-    {
-        H5Sclose(space);
-        H5Tclose(dtype);
-        return 4;
-    }
-
-    herr_t st = H5Awrite(attr, dtype, vals);
-    H5Aclose(attr);
-    H5Sclose(space);
-    H5Tclose(dtype);
-    return (st < 0) ? 5 : 0;
-}
-
-static int h5_write_attr_string1(hid_t obj, const char *name, const char *val)
-{
-    const char *a[1] = {val};
-    return h5_write_attr_str_array(obj, name, 1, a);
-}
-
-static int h5_write_attr_double_array(hid_t obj, const char *name, int n, const double *v)
-{
-    hsize_t dims[1] = {(hsize_t)n};
-    hid_t space = H5Screate_simple(1, dims, NULL);
-    if (space < 0)
-        return 1;
-
-    hid_t attr = H5Acreate2(obj, name, H5T_NATIVE_DOUBLE, space, H5P_DEFAULT, H5P_DEFAULT);
-    if (attr < 0)
-    {
-        H5Sclose(space);
-        return 2;
-    }
-
-    herr_t st = H5Awrite(attr, H5T_NATIVE_DOUBLE, v);
-    H5Aclose(attr);
-    H5Sclose(space);
-    return (st < 0) ? 3 : 0;
-}
-
-static int h5_write_attr_double1(hid_t obj, const char *name, double v)
-{
-    double a[1] = {v};
-    return h5_write_attr_double_array(obj, name, 1, a);
-}
-
-static int h5_write_attr_int_array(hid_t obj, const char *name, int n, const int *v)
-{
-    hsize_t dims[1] = {(hsize_t)n};
-    hid_t space = H5Screate_simple(1, dims, NULL);
-    if (space < 0)
-        return 1;
-
-    hid_t attr = H5Acreate2(obj, name, H5T_NATIVE_INT, space, H5P_DEFAULT, H5P_DEFAULT);
-    if (attr < 0)
-    {
-        H5Sclose(space);
-        return 2;
-    }
-
-    herr_t st = H5Awrite(attr, H5T_NATIVE_INT, v);
-    H5Aclose(attr);
-    H5Sclose(space);
-    return (st < 0) ? 3 : 0;
-}
-
-static int h5_write_attr_int1(hid_t obj, const char *name, int v)
-{
-    int a[1] = {v};
-    return h5_write_attr_int_array(obj, name, 1, a);
-}
-
-static const char *axis_name_osiris(Axis a)
-{
-    switch (a)
-    {
-    case AXIS_X:
-        return "x1";
-    case AXIS_Y:
-        return "x2";
-    case AXIS_Z:
-        return "x3";
-    default:
-        return "?";
-    }
-}
-
-static const char *axis_long_name_osiris(Axis a)
-{
-    switch (a)
-    {
-    case AXIS_X:
-        return "x_1";
-    case AXIS_Y:
-        return "x_2";
-    case AXIS_Z:
-        return "x_3";
-    default:
-        return "?";
-    }
-}
-
-static int osiris_write_axis_dataset(hid_t axis_group, int idx1, const char *name, const char *long_name,
-                                     const char *units, double vmin, double vmax)
-{
-    char dname[32];
-    snprintf(dname, sizeof(dname), "AXIS%d", idx1);
-
-    double vv[2] = {vmin, vmax};
-    hsize_t dims[1] = {2};
-    hid_t space = H5Screate_simple(1, dims, NULL);
-    if (space < 0)
-        return 1;
-
-    hid_t dset = H5Dcreate2(axis_group, dname, H5T_IEEE_F64LE, space, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-    H5Sclose(space);
-    if (dset < 0)
-        return 2;
-
-    herr_t st = H5Dwrite(dset, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, vv);
-    if (st < 0)
-    {
-        H5Dclose(dset);
-        return 3;
-    }
-
-    /* OSIRIS-style axis dataset attrs: NAME, LONG_NAME, TYPE, UNITS (each as 1-element string arrays) */
-    h5_write_attr_string1(dset, "NAME", name);
-    h5_write_attr_string1(dset, "LONG_NAME", long_name);
-    h5_write_attr_string1(dset, "TYPE", "linear");
-    h5_write_attr_string1(dset, "UNITS", units);
-
-    H5Dclose(dset);
-    return 0;
-}
-
 static int create_single_dataset_file(hid_t *out_f, hid_t *out_dset,
                                       const char *path,
                                       const char *component_name,
@@ -400,124 +243,8 @@ static int create_single_dataset_file(hid_t *out_f, hid_t *out_dset,
     if (f < 0)
         return 1;
 
-    /* --- OSIRIS-compatible structure (AXIS + SIMULATION + root attrs) --- */
-    {
-        /* Root-level OSIRIS attrs are typically 1-element arrays */
-        h5_write_attr_string1(f, "TYPE", "grid");
-        h5_write_attr_string1(f, "NAME", component_name);
-        h5_write_attr_string1(f, "LABEL", component_name);
-        h5_write_attr_string1(f, "UNITS", "a.u.");
-
-        h5_write_attr_int1(f, "ITER", 0);
-        h5_write_attr_double1(f, "TIME", g->t_min);
-        h5_write_attr_string1(f, "TIME UNITS", "fs");
-        h5_write_attr_double1(f, "OFFSET_T", 0.0);
-
-        /* OFFSET_X is a vector with length = nd */
-        {
-            double offx[3] = {0.0, 0.0, 0.0};
-            h5_write_attr_double_array(f, "OFFSET_X", nd, offx);
-        }
-
-        /* AXIS group with AXIS1..AXISnd datasets (each has 2 values: min/max) */
-        hid_t g_axis = H5Gcreate2(f, "AXIS", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-        if (g_axis >= 0)
-        {
-            if (nd == 2)
-            {
-                /* Inverse of dataset order (t, ax1) -> (ax1, t) */
-                osiris_write_axis_dataset(g_axis, 1,
-                                          axis_name_osiris(g->ax1), axis_long_name_osiris(g->ax1),
-                                          "um", g->ax1_min, g->ax1_max);
-
-                osiris_write_axis_dataset(g_axis, 2, "t", "t", "fs", g->t_min, g->t_max);
-            }
-            else /* nd == 3 */
-            {
-                /* Inverse of dataset order (t, ax1, ax2) -> (ax2, ax1, t) */
-                osiris_write_axis_dataset(g_axis, 1,
-                                          axis_name_osiris(g->ax1), axis_long_name_osiris(g->ax1),
-                                          "um", g->ax1_min, g->ax1_max);
-
-                osiris_write_axis_dataset(g_axis, 2,
-                                          axis_name_osiris(g->ax2), axis_long_name_osiris(g->ax2),
-                                          "um", g->ax2_min, g->ax2_max);
-
-                osiris_write_axis_dataset(g_axis, 3, "t", "t", "fs", g->t_min, g->t_max);
-            }
-
-            H5Gclose(g_axis);
-        }
-
-        /* SIMULATION group (minimal subset) */
-        hid_t g_sim = H5Gcreate2(f, "SIMULATION", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-        if (g_sim >= 0)
-        {
-            int ndims_arr[1] = {nd};
-            h5_write_attr_int_array(g_sim, "NDIMS", 1, ndims_arr);
-
-            /* NX: match AXIS order (inverse of dataset order) */
-            {
-                int nx[3] = {0, 0, 0};
-
-                if (nd == 2)
-                {
-                    /* dataset dims are (t, ax1) -> AXIS order is (ax1, t) */
-                    nx[0] = (int)dims[1];
-                    nx[1] = (int)dims[0];
-                }
-                else
-                {
-                    /* dataset dims are (t, ax1, ax2) -> AXIS order is (ax2, ax1, t) */
-                    nx[0] = (int)dims[1];
-                    nx[1] = (int)dims[2];
-                    nx[2] = (int)dims[0];
-                }
-
-                h5_write_attr_int_array(g_sim, "NX", nd, nx);
-            }
-
-            {
-                int nx[3] = {1, 1, 1};
-                h5_write_attr_int_array(g_sim, "PAR_NODE_CONF", nd, nx);
-            }
-
-            /* DT: time step (fs) */
-            h5_write_attr_double_array(g_sim, "DT", 1, (double[]){g->dt});
-
-            /* XMIN/XMAX in the same axis order as AXIS1.. (inverse of dataset order) */
-            {
-                double xmin[3] = {0.0, 0.0, 0.0};
-                double xmax[3] = {0.0, 0.0, 0.0};
-
-                if (nd == 2)
-                {
-                    /* (ax1, t) */
-                    xmin[0] = g->ax1_min;
-                    xmax[0] = g->ax1_max;
-                    xmin[1] = g->t_min;
-                    xmax[1] = g->t_max;
-                }
-                else
-                {
-                    /* (ax2, ax1, t) */
-                    xmin[0] = g->ax1_min;
-                    xmax[0] = g->ax1_max;
-                    xmin[1] = g->ax2_min;
-                    xmax[1] = g->ax2_max;
-                    xmin[2] = g->t_min;
-                    xmax[2] = g->t_max;
-                }
-
-                h5_write_attr_double_array(g_sim, "XMIN", nd, xmin);
-                h5_write_attr_double_array(g_sim, "XMAX", nd, xmax);
-            }
-
-            H5Gclose(g_sim);
-        }
-    }
-
     // metadata
+    h5_write_attr_string(f, "TYPE", "grid");
     h5_write_attr_string(f, "layout", "field_cache");
     h5_write_attr_string(f, "component", component_name);
     h5_write_attr_int(f, "ndim_total", nd);
@@ -554,47 +281,15 @@ static int create_single_dataset_file(hid_t *out_f, hid_t *out_dset,
     }
 
     // single dataset
-    // single dataset
-    hsize_t cdims[3]; // canonical dims (t first)
-    const hsize_t *use_dims = dims;
-
-    if (nd == 3)
-    {
-        // Enforce (t, ax1, ax2) on disk.
-        // If caller accidentally provided (ax1, ax2, t), swap to canonical.
-        if (dims[0] != (hsize_t)g->t_n && dims[2] == (hsize_t)g->t_n)
-        {
-            cdims[0] = dims[2]; // t
-            cdims[1] = dims[0]; // ax1
-            cdims[2] = dims[1]; // ax2
-            use_dims = cdims;
-        }
-    }
-    else if (nd == 2)
-    {
-        // Enforce (t, ax1) on disk, if needed.
-        if (dims[0] != (hsize_t)g->t_n && dims[1] == (hsize_t)g->t_n)
-        {
-            cdims[0] = dims[1]; // t
-            cdims[1] = dims[0]; // ax1
-            use_dims = cdims;
-        }
-    }
-
-    hid_t space = H5Screate_simple(nd, use_dims, NULL);
-
+    hid_t space = H5Screate_simple(nd, dims, NULL);
     if (space < 0)
     {
         H5Fclose(f);
         return 2;
     }
 
-    char dset_path[64];
-    snprintf(dset_path, sizeof(dset_path), "/%s", component_name);
-
-    hid_t dset = H5Dcreate2(f, dset_path, H5T_IEEE_F64LE, space,
+    hid_t dset = H5Dcreate2(f, "/data", H5T_IEEE_F64LE, space,
                             H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-
     H5Sclose(space);
     if (dset < 0)
     {
@@ -987,10 +682,8 @@ static int merge_component_2d(const InputGridSpec *g, const char *prefix,
             H5Fclose(fin);
             continue;
         }
-        char dset_path[64];
-        snprintf(dset_path, sizeof(dset_path), "/%s", comp);
 
-        hid_t din = H5Dopen2(fin, dset_path, H5P_DEFAULT);
+        hid_t din = H5Dopen2(fin, "/data", H5P_DEFAULT);
         if (din < 0)
         {
             H5Fclose(fin);
@@ -1083,11 +776,8 @@ static int merge_component_3d(const InputGridSpec *g, const char *prefix,
             H5Fclose(fin);
             continue;
         }
-        char dset_path[64];
-        snprintf(dset_path, sizeof(dset_path), "/%s", comp);
 
-        hid_t din = H5Dopen2(fin, dset_path, H5P_DEFAULT);
-
+        hid_t din = H5Dopen2(fin, "/data", H5P_DEFAULT);
         if (din < 0)
         {
             H5Fclose(fin);

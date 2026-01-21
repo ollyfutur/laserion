@@ -1,0 +1,187 @@
+# ======================================================================
+# Units:
+#   time: fs
+#   length: um
+#   field amplitude E0: GV/m
+#   wavelength: um
+#   angles: degrees
+# ======================================================================
+
+[run]
+## output_dir defaults to "data" if omitted
+# output_dir = "data"
+
+## Cache policy (fields E/A)
+## If these are omitted, defaults are:
+# cache_mode = "auto"
+# cache_on_mismatch = "create_new"
+# cache_warn_on_mismatch = true
+# cache_store = ["E","A"]
+# cache_mode = "auto"                 # "auto" | "build" | "read_only"
+# cache_on_mismatch = "create_new"    # "create_new" | "rebuild_in_place" | "error"
+# cache_warn_on_mismatch = true     # default true
+
+## Advanced (optional)
+# cache_store = ["E"]               # default ["E","A"]
+# cache_precision = "float32"       # "float32" | "float64"
+# cache_interpolation = "linear"    # "nearest" | "linear"
+# cache_compression = "gzip"        # "none" | "gzip"
+# cache_compression_level = 1       # 1..9
+
+# ==============================
+# 1) Temporal/Spatial parameters
+# ==============================
+
+[grid]
+t_min = -200.0
+t_max =  200.0
+dt = 0.02
+
+# 1D: "x","y","z" ; 2D: "xy","xz","yz" (and permutations)
+spatial_axes = "zx"
+
+fixed = { x = 0.0, y = 0.0, z = 0.0 }
+
+# Axis definitions:
+# ax1 corresponds to first letter in spatial_axes, ax2 to second letter (if present)
+ax1_min = -100.0
+ax1_max =  100.0
+ax1_n = 2001
+
+ax2_min = -10.0
+ax2_max =  10.0
+ax2_n = 401
+# For 1D, omit ax2_*.
+
+# =========================
+# 2) Lasers (>=1 required)
+# =========================
+
+[[laser]]
+type = "standard"
+E0 = 100.0
+wavelength = 0.8
+phase0 = 0.0
+k_vec = [0.0, 0.0, 1.0]
+r_start = [0.0, 0.0, 0.0]
+use_retarded_time = true
+temporal_type = "gaussian"
+tau = 30.0
+transverse_type = "gaussian"
+w0 = 4.0
+zf = 0.0
+polarization = "linear"       # "linear" | "circular" | "Jones"
+angle = 0.0
+
+[[laser]]
+type = "standard"
+E0 = 50.0
+wavelength = 1.0
+phase0 = 20.0                 
+k_vec = [0.0, 0.0, 1.0]
+r_start = [0.0, 0.0, 0.0]
+use_retarded_time = true
+temporal_type = "gaussian"
+tau = 50.0
+transverse_type = "hermite"
+w0 = 8.0
+zf = 0.0
+herm_lm = [0, 1]
+polarization = "Jones"
+angle = 50.0
+p1 = 1.0
+p2 = 0.7
+delta = 90.0
+
+
+# =====================================
+# 3) Field diagnostics (gas independent)
+# =====================================
+
+[[field_diag]]
+type = "lineout"          # "lineout" (1D) | "slice" (2D)
+quantity = "Ez"           # "Ex","Ey","Ez","Ax","Ay","Az" (allow list if desired)
+pos = { t = 3.0, x = 0.0 }  # fixed coordinates; remaining axis varies
+
+[[field_diag]]
+type = "slice"
+quantity = "Ex"
+pos = { t = 0.0 }          # fixes time; remaining spatial axes vary
+
+# ==========================
+# 4) Gas (optional)
+# ==========================
+[gas]
+species = "He"                # "He", "Ne", "Ar", ... (whatever your code supports)
+# Z_list = [1, 2]              # charge states of interest; default should be all possible states
+# ion_model = "adk"             # currently likely "adk" (extend later) (adk by default, maybe leave here commented just in case for later)
+
+
+# ==========================================
+# 6) Ionization / MDF / particles diagnostics
+# ==========================================
+# Only valid if gas.enabled=true.
+# These also must be subsets/views of the cached domain.
+
+[[diagnostics.ionization]]
+type = "ionization_fraction"
+# options you may implement:
+#   - "ionization_fraction"    (rate-integrated fraction vs axes)
+#   - "mdf_histogram"          (momentum distribution function)
+#   - "mdf_particles"          (particle sampling/output)
+#   - "phase_space"            (if you implement it as a diagnostic)
+
+prefix = "ion/frac_tz"
+source = "fields_cache"
+
+# For ionization fraction: choose output axes (must be subset of cache axes + time)
+vary_axes = ["t", "z"]                         # examples: ["t","z"] or ["t","x"] or ["t"] etc.
+fixed = { x_um = 0.0, y_um = 0.0, z_um = 0.0 }
+
+# If your ionization stepping uses dt, you should default to cache dt,
+# but allow override. If omitted, use fields_cache.dt_fs.
+# dt_fs = 0.02
+
+write_total = true # whether to write total fraction across Z_list
+
+# ----------------------------
+# MDF histogram (example block)
+# ----------------------------
+# [[diagnostics.ionization]]
+# type = "mdf_histogram"
+# prefix = "mdf/pxpz_region"
+# source = "fields_cache"
+#
+# # Spatial region (must be within cache bounds)
+# region = { xmin=-5, xmax=5, ymin=0, ymax=0, zmin=-5, zmax=5 }
+# sampling = { nx=21, ny=1, nz=21 }    # sampling points in region
+# envelope_cut = 1e-6                  # ignore points where envelope is below threshold
+#
+# kind = "px_pz"                        # your supported MDF kinds (define these explicitly)
+# bins1 = { nbins=600, min=-2.0, max=2.0 }
+# bins2 = { nbins=600, min=-2.0, max=2.0 }
+# normalize_sum_to_1 = true
+#
+# # Optional output naming metadata
+# dataset_name = "f_pxpz"
+# label = "f(p_x,p_z)"
+# units = "1"
+# file_suffix = "_mdf.h5"
+
+# ----------------------------
+# MDF particles (example block)
+# ----------------------------
+# [[diagnostics.ionization]]
+# type = "mdf_particles"
+# prefix = "particles/source"
+# source = "fields_cache"
+#
+# region = { xmin=-5, xmax=5, ymin=0, ymax=0, zmin=-5, zmax=5 }
+# sampling = { nx=10, ny=1, nz=10 }
+# ppc = 50
+# seed = 0
+#
+# mdf_at_particle_position = false     # if true, evaluate MDF at the particle position (costly)
+# dataset_name = "electrons"
+# file_suffix = "_particles.h5"
+# particle_map = "osiris_default"      # if you support multiple output conventions
