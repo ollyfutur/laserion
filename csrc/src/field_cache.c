@@ -614,20 +614,31 @@ static int create_single_dataset_file(hid_t *out_f, hid_t *out_dset,
 }
 
 static void component_filename(char *buf, size_t bufsz,
-                               const char *prefix,
+                               const char *cache_dir,
                                const char *comp, int rank, int is_rank)
 {
+    /* Cache is stored under a directory (e.g., "cache/") with fixed filenames. */
+    char fname[128];
     if (is_rank)
     {
-        snprintf(buf, bufsz, "%s_%s.rank%04d.h5", prefix, comp, rank);
+        snprintf(fname, sizeof(fname), "%s.rank%04d.h5", comp, rank);
     }
     else
     {
-        snprintf(buf, bufsz, "%s_%s.h5", prefix, comp);
+        snprintf(fname, sizeof(fname), "%s.h5", comp);
+    }
+
+    size_t dir_len = strlen(cache_dir);
+    int need_slash = (dir_len > 0 && cache_dir[dir_len - 1] != '/');
+    int n = snprintf(buf, bufsz, "%s%s%s", cache_dir, need_slash ? "/" : "", fname);
+    if (n < 0 || (size_t)n >= bufsz)
+    {
+        fprintf(stderr, "field_cache: component path too long for dir='%s' comp='%s'\n", cache_dir, comp);
+        abort();
     }
 }
 
-static void remove_rank_files(const char *prefix, const char *comp, int nranks, int root, MPI_Comm comm)
+static void remove_rank_files(const char *cache_dir, const char *comp, int nranks, int root, MPI_Comm comm)
 {
     int rank = 0;
     MPI_Comm_rank(comm, &rank);
@@ -639,7 +650,7 @@ static void remove_rank_files(const char *prefix, const char *comp, int nranks, 
     for (int r = 0; r < nranks; ++r)
     {
         // same naming function you already have:
-        component_filename(path, sizeof(path), prefix, comp, r, 1);
+        component_filename(path, sizeof(path), cache_dir, comp, r, 1);
         if (unlink(path) != 0)
         {
             // Best-effort: warn, do not abort

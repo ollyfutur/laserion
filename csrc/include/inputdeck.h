@@ -112,11 +112,47 @@ extern "C"
         size_t capacity;
     } InputLaserDeck;
 
+    /* -------------------------- General run parameters -------------------------- */
+
     typedef struct
     {
+        /* Base working directory for the run. "." means current directory. */
+        char working_dir[256];
+    } RunSpec;
+
+    /* -------------------------- Field cache control -------------------------- */
+
+    typedef enum
+    {
+        FC_MODE_AUTO = 0,    /* load if compatible, else compute */
+        FC_MODE_COMPUTE = 1, /* always compute (ignore existing) */
+        FC_MODE_LOAD = 2,    /* require existing compatible cache */
+        FC_MODE_OFF = 3      /* do not use field cache */
+    } FieldCacheMode;
+
+    typedef struct
+    {
+        FieldCacheMode mode;
+
+        /* Output directory that will contain Ex.h5, Ey.h5, ... (no prefix) */
+        char out_dir[256];
+
+        /* If computing: write HDF5 outputs */
+        bool write;
+
+        /* Future: keep computed blocks in memory for other diagnostics */
+        bool keep_in_memory;
+
+        /* Future: timesteps per block for streaming/diagnostics */
+        int block_t;
+    } FieldCacheSpec;
+
+    typedef struct
+    {
+        RunSpec run;
         InputGridSpec grid;
         InputLaserDeck lasers;
-
+        FieldCacheSpec field_cache;
         // Future: diagnostics, outputs, species, etc.
     } InputSimSpec;
 

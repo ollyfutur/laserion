@@ -1,6 +1,14 @@
+# ================= Layout ===============================================
+
+SRC_DIR   := src
+TEST_DIR  := tests
+BUILD_DIR := build
+BIN_DIR   := bin
+
 # ================= Compiler ==============================================
 
-MPICC := /opt/openmpi/gcc-14.2.0/bin/mpicc
+##MPICC := /opt/openmpi/gcc-14.2.0/bin/mpicc
+MPICC := /opt/homebrew/bin/mpicc
 CC    := $(MPICC)
 
 
@@ -9,6 +17,13 @@ CC    := $(MPICC)
 H5_ROOT  := /opt/hdf5/gcc-14.2.0
 H5_FLAGS := -I$(H5_ROOT)/include
 H5_LINK  := -L$(H5_ROOT)/lib -lhdf5 -lz -ldl
+
+# ================= TOML (tomlc99) ========================================
+
+TOML_DIR   := vendor/tomlc99
+TOML_FLAGS := -I$(TOML_DIR)
+TOML_SRC   := $(TOML_DIR)/toml.c
+TOML_OBJ   := $(BUILD_DIR)/$(TOML_DIR)/toml.o
 
 # ================= Flags =================================================
 
@@ -37,17 +52,10 @@ else
 endif
 
 CFLAGS   := $(CSTD) $(WARN) $(OPT) $(ALIAS) $(ARCH_FLAGS)
-CPPFLAGS := -Iinclude
+CPPFLAGS := -Iinclude $(TOML_FLAGS)
 
 LDFLAGS :=
 LDLIBS  := -lm
-
-# ================= Layout ===============================================
-
-SRC_DIR   := src
-TEST_DIR  := tests
-BUILD_DIR := build
-BIN_DIR   := bin
 
 # ================= Library sources =======================================
 
@@ -61,10 +69,15 @@ LIB_SRCS := \
 	$(SRC_DIR)/laser.c \
 	$(SRC_DIR)/diag_h5.c \
 	$(SRC_DIR)/diag_grid.c \
-        $(SRC_DIR)/field_grid.c \
-        $(SRC_DIR)/ionization_grid.c \
+      $(SRC_DIR)/field_grid.c \
+      $(SRC_DIR)/ionization_grid.c \
 	$(SRC_DIR)/mdf.c \
-	$(SRC_DIR)/mdf_grid.c
+	$(SRC_DIR)/mdf_grid.c \
+      $(SRC_DIR)/mdf_particles.c \
+      $(SRC_DIR)/inputdeck.c \
+      $(SRC_DIR)/field_cache.c \
+      $(SRC_DIR)/driver.c \
+      $(SRC_DIR)/laser_build.c 
 
 LIB_OBJS := $(LIB_SRCS:%.c=$(BUILD_DIR)/%.o)
 
@@ -74,7 +87,7 @@ LIB_OBJS := $(LIB_SRCS:%.c=$(BUILD_DIR)/%.o)
 # Each executable will be:  bin/test_<name>
 
 TESTS := temporal transverse adk pulse pulse_A multipulse grid_examples \
-         field_grid ionization mdf
+         field_grid ionization mdf mdf_particles inputdeck run
 TEST_EXES := $(TESTS:%=$(BIN_DIR)/test_%)
 
 # ================= Default target ========================================
@@ -90,7 +103,7 @@ $(BUILD_DIR)/%.o: %.c
 
 # Link each test executable:
 #   bin/test_<name> = (all library objs) + build/tests/test_<name>.o
-$(BIN_DIR)/test_%: $(LIB_OBJS) $(BUILD_DIR)/$(TEST_DIR)/test_%.o
+$(BIN_DIR)/test_%: $(LIB_OBJS) $(TOML_OBJ) $(BUILD_DIR)/$(TEST_DIR)/test_%.o
 	@mkdir -p $(BIN_DIR)
 	$(CC) $(CFLAGS) $(H5_FLAGS) $^ -o $@ $(LDFLAGS) $(LDLIBS) $(H5_LINK)
 

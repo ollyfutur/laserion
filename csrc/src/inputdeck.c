@@ -10,6 +10,10 @@
 // tomlc99
 #include "toml.h"
 
+/* -------------------------- TOML getters (forward decls) -------------------------- */
+static int get_bool(toml_table_t *tab, const char *key, bool *out);
+static char *get_string_dup(toml_table_t *tab, const char *key);
+
 /* ----------------------------- utilities ----------------------------- */
 
 static int derive_n_from_dx(double amin, double amax, double dx, int *n_out)
@@ -180,6 +184,133 @@ static int parse_sense(const char *s, PolarizationSense *out)
         return 0;
     }
     return 1;
+}
+
+/* -------------------------- field_cache defaults/parse -------------------------- */
+
+static void run_defaults(RunSpec *r)
+{
+    memset(r, 0, sizeof(*r));
+    snprintf(r->working_dir, sizeof(r->working_dir), ".");
+}
+
+static void field_cache_defaults(FieldCacheSpec *fc)
+{
+    memset(fc, 0, sizeof(*fc));
+    fc->mode = FC_MODE_AUTO;
+    /* default: current directory */
+    snprintf(fc->out_dir, sizeof(fc->out_dir), ".");
+    fc->write = true;
+    fc->keep_in_memory = false;
+    fc->block_t = 64;
+}
+
+static int get_int(toml_table_t *tab, const char *key, int *out)
+{
+    toml_datum_t d = toml_int_in(tab, key);
+    if (!d.ok)
+        return 0;
+    if (d.u.i < -2147483648LL || d.u.i > 2147483647LL)
+        return 0;
+    *out = (int)d.u.i;
+    return 1;
+}
+
+static int parse_field_cache_mode(const char *s, FieldCacheMode *out)
+{
+    if (streqi(s, "auto"))
+    {
+        *out = FC_MODE_AUTO;
+        return 0;
+    }
+    if (streqi(s, "compute") || streqi(s, "calc") || streqi(s, "calculate"))
+    {
+        *out = FC_MODE_COMPUTE;
+        return 0;
+    }
+    if (streqi(s, "load") || streqi(s, "read"))
+    {
+        *out = FC_MODE_LOAD;
+        return 0;
+    }
+    if (streqi(s, "off") || streqi(s, "none") || streqi(s, "disable"))
+    {
+        *out = FC_MODE_OFF;
+        return 0;
+    }
+    return 1;
+}
+
+static int parse_run(toml_table_t *root, RunSpec *r)
+{
+    toml_table_t *tr = toml_table_in(root, "run");
+    if (!tr)
+        return 0; /* optional */
+
+    char *wd = get_string_dup(tr, "working_dir");
+    if (wd)
+    {
+        if (wd[0] == '\0')
+        {
+            fprintf(stderr, "inputdeck: [run] working_dir must not be empty\n");
+            free(wd);
+            return 1;
+        }
+        snprintf(r->working_dir, sizeof(r->working_dir), "%s", wd);
+        free(wd);
+    }
+
+    return 0;
+}
+
+static int parse_field_cache(toml_table_t *root, FieldCacheSpec *fc)
+{
+    toml_table_t *tfc = toml_table_in(root, "field_cache");
+    if (!tfc)
+        return 0; /* optional */
+
+    /* mode */
+    char *mode = get_string_dup(tfc, "mode");
+    if (mode)
+    {
+        FieldCacheMode m;
+        if (parse_field_cache_mode(mode, &m) != 0)
+        {
+            fprintf(stderr, "inputdeck: [field_cache] invalid mode=\"%s\" (expected auto|compute|load|off)\n", mode);
+            free(mode);
+            return 1;
+        }
+        fc->mode = m;
+        free(mode);
+    }
+
+    /* out_dir (preferred) or legacy prefix/dir */
+    char *od = get_string_dup(tfc, "out_dir");
+    if (!od)
+        od = get_string_dup(tfc, "dir");
+    if (!od)
+        od = get_string_dup(tfc, "prefix");
+    if (od)
+    {
+        snprintf(fc->out_dir, sizeof(fc->out_dir), "%s", od);
+        free(od);
+    }
+
+    (void)get_bool(tfc, "write", &fc->write);
+    (void)get_bool(tfc, "keep_in_memory", &fc->keep_in_memory);
+
+    int bt;
+    if (get_int(tfc, "block_t", &bt))
+    {
+        if (bt <= 0)
+        {
+            fprintf(stderr, "inputdeck: [field_cache] block_t must be > 0\n");
+            return 2;
+        }
+        fc->block_t = bt;
+    }
+
+    return 0;
 }
 
 /* -------------------------- deck memory -------------------------- */
@@ -707,8 +838,10 @@ int inputdeck_read(const char *path, InputSimSpec *sim)
         return 1;
 
     // init defaults
+    run_defaults(&sim->run);
     grid_defaults(&sim->grid);
     lasers_init(&sim->lasers);
+    field_cache_defaults(&sim->field_cache);
 
     char *text = read_entire_file(path);
     if (!text)
@@ -728,11 +861,19 @@ int inputdeck_read(const char *path, InputSimSpec *sim)
 
     int rc = 0;
 
+    rc = parse_run(root, &sim->run);
+    if (rc != 0)
+        goto done;
+
     rc = parse_grid(root, &sim->grid);
     if (rc != 0)
         goto done;
 
     rc = parse_lasers(root, &sim->lasers);
+    if (rc != 0)
+        goto done;
+
+    rc = parse_field_cache(root, &sim->field_cache);
     if (rc != 0)
         goto done;
 
@@ -764,6 +905,35 @@ void inputdeck_dump(const InputSimSpec *sim)
         return;
 
     const InputGridSpec *g = &sim->grid;
+    printf("[run]\n");
+    printf("  working_dir=%s\n\n", sim->run.working_dir);
+    /* field_cache */
+    {
+        const FieldCacheSpec *fc = &sim->field_cache;
+        const char *m = "?";
+        switch (fc->mode)
+        {
+        case FC_MODE_AUTO:
+            m = "auto";
+            break;
+        case FC_MODE_COMPUTE:
+            m = "compute";
+            break;
+        case FC_MODE_LOAD:
+            m = "load";
+            break;
+        case FC_MODE_OFF:
+            m = "off";
+            break;
+        }
+        printf("\n[field_cache]\n");
+        printf("  mode=%s\n", m);
+        printf("  out_dir=%s\n", fc->out_dir);
+        printf("  write=%s keep_in_memory=%s block_t=%d\n",
+               fc->write ? "true" : "false",
+               fc->keep_in_memory ? "true" : "false",
+               fc->block_t);
+    }
     printf("[grid]\n");
     printf("  t_min=%g t_max=%g dt=%g n=%d\n", g->t_min, g->t_max, g->dt, g->t_n);
     printf("  spatial_axes=%s%s\n", axis_to_str(g->ax1), g->has_ax2 ? axis_to_str(g->ax2) : "");

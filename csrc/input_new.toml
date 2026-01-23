@@ -1,5 +1,23 @@
+# =========================
+# 0) General run parameters
+# =========================
+
+[run]
+working_dir = "."
+
+# =========================
+# 1) Field cache parameters
+# =========================
+
+[field_cache]
+mode = "auto"          # "auto" | "compute" | "load" | "off"
+write = true           # if computing: write HDF5 outputs
+keep_in_memory = false # later: retain cache blocks for diagnostics
+block_t = 64           # later: block size in timesteps for streaming/diagnostics
+
+
 # ==============================
-# 1) Temporal/Spatial parameters
+# 2) Temporal/Spatial parameters
 # ==============================
 
 [grid]
@@ -24,7 +42,7 @@ dx2      = 0.02
 # For 1D, omit ax2_*.
 
 # =========================
-# 2) Lasers (>=1 required)
+# 3) Lasers (>=1 required)
 # =========================
 
 [[laser]]
