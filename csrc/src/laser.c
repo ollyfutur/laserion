@@ -200,6 +200,9 @@ int SinglePulse_init(SinglePulse *p,
     if (vnormalize(k_vec, p->k_hat) != 0)
         return 2;
 
+    if (!(wavelength_um > 0.0))
+        return 5;
+
     p->r_start[0] = r_start[0];
     p->r_start[1] = r_start[1];
     p->r_start[2] = r_start[2];

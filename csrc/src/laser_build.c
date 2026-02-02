@@ -9,6 +9,10 @@
 #include "transverse_profile.h"
 #include "polarization.h"
 
+#ifndef M_PI
+#define M_PI 3.141592653589793238462643383279502884
+#endif
+
 static void *xcalloc(size_t n, size_t sz)
 {
     void *p = calloc(n, sz);
@@ -157,7 +161,7 @@ int BuiltLasers_build(const InputSimSpec *sim, BuiltLasers *out)
                               out->temporal[i],
                               out->trans[i],
                               &pol,
-                              in->phase0,
+                              deg2rad(in->phase0),
                               in->k_vec,
                               in->use_retarded_time ? 1 : 0,
                               in->r_start);
