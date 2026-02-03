@@ -1,6 +1,6 @@
 #include <stdio.h>
 #include <mpi.h>
-#include "driver.h"
+#include "run.h"
 
 int main(int argc, char **argv)
 {

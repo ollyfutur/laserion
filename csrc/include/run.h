@@ -1,5 +1,5 @@
-#ifndef DRIVER_H
-#define DRIVER_H
+#ifndef RUN_H
+#define RUN_H
 
 #include <mpi.h>
 

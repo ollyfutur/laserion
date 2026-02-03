@@ -3,7 +3,7 @@
 #include <stdint.h>
 #include <mpi.h>
 
-#include "laser.h"    /* LaserPulse_E, LaserPulse_A */
+#include "laser.h"   /* LaserPulse_E, LaserPulse_A */
 #include "diag_h5.h" /* grid writer types (DiagAxis, etc.) */
 
 /* ----------------------------- axis selection ----------------------------- */
@@ -132,4 +132,3 @@ int fg_run_2d(const struct LaserPulse *pulse,
               const FG_Options *opt,
               const char *path_or_prefix,
               MPI_Comm comm);
-

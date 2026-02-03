@@ -1,5 +1,7 @@
 #ifndef INPUTDECK_H
 #define INPUTDECK_H
+#define FIELD_DIAG_MAX_COMP 8
+#define FIELD_DIAG_COMP_STR 4
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -149,10 +151,30 @@ extern "C"
 
     typedef struct
     {
+        /* components: array of strings like "Ex", "Ay" */
+        int ncomp;
+        char comp[FIELD_DIAG_MAX_COMP][FIELD_DIAG_COMP_STR];
+
+        /* axes string: 1 or 2 chars from {t,x,y,z}; order matters */
+        char axes[3]; /* "t", "xz", etc */
+
+        /* positions for fixed coordinates */
+        double pos_x, pos_y, pos_z, pos_t;
+    } FieldDiagSpec;
+
+    typedef struct
+    {
+        int n;
+        FieldDiagSpec *v; /* dynamically allocated list */
+    } FieldDiagList;
+
+    typedef struct
+    {
         RunSpec run;
         InputGridSpec grid;
         InputLaserDeck lasers;
         FieldCacheSpec field_cache;
+        FieldDiagList field_diag;
         // Future: diagnostics, outputs, species, etc.
     } InputSimSpec;
 

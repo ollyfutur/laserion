@@ -13,6 +13,7 @@
 /* -------------------------- TOML getters (forward decls) -------------------------- */
 static int get_bool(toml_table_t *tab, const char *key, bool *out);
 static char *get_string_dup(toml_table_t *tab, const char *key);
+static int get_double(toml_table_t *tab, const char *key, double *out);
 
 /* ----------------------------- utilities ----------------------------- */
 
@@ -132,6 +133,61 @@ static bool parse_axis_char(char c, Axis *out)
     return false;
 }
 
+static int parse_diag_axes(const char *s, char axes_out[3])
+{
+    if (!s)
+        return 1;
+    size_t n = strlen(s);
+    if (n != 1 && n != 2)
+        return 2;
+
+    char a0 = (char)tolower((unsigned char)s[0]);
+    if (!(a0 == 't' || a0 == 'x' || a0 == 'y' || a0 == 'z'))
+        return 3;
+
+    if (n == 1)
+    {
+        axes_out[0] = a0;
+        axes_out[1] = '\0';
+        axes_out[2] = '\0';
+        return 0;
+    }
+
+    char a1 = (char)tolower((unsigned char)s[1]);
+    if (!(a1 == 't' || a1 == 'x' || a1 == 'y' || a1 == 'z'))
+        return 4;
+    if (a1 == a0)
+        return 5;
+
+    axes_out[0] = a0;
+    axes_out[1] = a1;
+    axes_out[2] = '\0';
+    return 0;
+}
+
+static int parse_component_token(const char *s, char out[4])
+{
+    /* Expect exactly: 'E' or 'A' followed by 'x','y','z' (case-insensitive) */
+    if (!s)
+        return 1;
+    if (strlen(s) != 2)
+        return 2;
+
+    char c0 = (char)toupper((unsigned char)s[0]);
+    char c1 = (char)tolower((unsigned char)s[1]);
+
+    if (!(c0 == 'E' || c0 == 'A'))
+        return 3;
+    if (!(c1 == 'x' || c1 == 'y' || c1 == 'z'))
+        return 4;
+
+    out[0] = c0;
+    out[1] = c1;
+    out[2] = '\0';
+    out[3] = '\0';
+    return 0;
+}
+
 static bool parse_spatial_axes(const char *s, Axis *ax1, Axis *ax2, bool *has_ax2)
 {
     if (!s)
@@ -155,6 +211,59 @@ static bool parse_spatial_axes(const char *s, Axis *ax1, Axis *ax2, bool *has_ax
         return false;
     *has_ax2 = true;
     return true;
+}
+
+static int parse_components_array(toml_table_t *t, const char *key,
+                                  FieldDiagSpec *d, int diag_index)
+{
+    toml_array_t *arr = toml_array_in(t, key);
+    if (!arr)
+    {
+        fprintf(stderr, "inputdeck: field_diag[%d] missing key %s (expected array of strings)\n",
+                diag_index, key);
+        return 1;
+    }
+
+    int n = toml_array_nelem(arr);
+    if (n <= 0)
+    {
+        fprintf(stderr, "inputdeck: field_diag[%d] %s is empty\n", diag_index, key);
+        return 2;
+    }
+    if (n > 8)
+    {
+        fprintf(stderr, "inputdeck: field_diag[%d] too many components (%d), max=8\n",
+                diag_index, n);
+        return 3;
+    }
+
+    d->ncomp = 0;
+    for (int i = 0; i < n; ++i)
+    {
+        toml_datum_t ds = toml_string_at(arr, i);
+        if (!ds.ok || !ds.u.s)
+        {
+            fprintf(stderr, "inputdeck: field_diag[%d] components[%d] must be a string\n",
+                    diag_index, i);
+            return 4;
+        }
+
+        char token[4] = {0, 0, 0, 0};
+        int rc = parse_component_token(ds.u.s, token);
+        free(ds.u.s);
+
+        if (rc != 0)
+        {
+            fprintf(stderr, "inputdeck: field_diag[%d] invalid component \"%s\" (expected Ex,Ey,Ez,Ax,Ay,Az)\n",
+                    diag_index, token);
+            return 5;
+        }
+
+        snprintf(d->comp[d->ncomp], sizeof(d->comp[d->ncomp]), "%s", token);
+        d->ncomp++;
+    }
+
+    return 0;
 }
 
 static bool streqi(const char *a, const char *b)
@@ -313,6 +422,70 @@ static int parse_field_cache(toml_table_t *root, FieldCacheSpec *fc)
     return 0;
 }
 
+static int parse_field_diag(toml_table_t *root, FieldDiagList *L)
+{
+    toml_array_t *arr = toml_array_in(root, "field_diag");
+    if (!arr)
+        return 0; /* optional */
+
+    int n = toml_array_nelem(arr);
+    if (n <= 0)
+        return 0;
+
+    L->v = (FieldDiagSpec *)xmalloc((size_t)n * sizeof(FieldDiagSpec));
+    L->n = 0;
+
+    for (int i = 0; i < n; ++i)
+    {
+        toml_table_t *td = toml_table_at(arr, i);
+        if (!td)
+        {
+            fprintf(stderr, "inputdeck: field_diag[%d] is not a table\n", i);
+            return 1;
+        }
+
+        FieldDiagSpec d;
+        memset(&d, 0, sizeof(d));
+        d.pos_x = 0.0;
+        d.pos_y = 0.0;
+        d.pos_z = 0.0;
+        d.pos_t = 0.0;
+        snprintf(d.axes, sizeof(d.axes), "t"); /* default */
+
+        /* axes */
+        char *axes = get_string_dup(td, "axes");
+        if (!axes)
+        {
+            fprintf(stderr, "inputdeck: field_diag[%d] missing key axes\n", i);
+            return 2;
+        }
+        int ra = parse_diag_axes(axes, d.axes);
+        if (ra != 0)
+        {
+            fprintf(stderr, "inputdeck: field_diag[%d] invalid axes=\"%s\" (use 1 or 2 of t,x,y,z; distinct)\n",
+                    i, axes);
+            free(axes);
+            return 3;
+        }
+        free(axes);
+
+        /* components array */
+        int rc = parse_components_array(td, "components", &d, i);
+        if (rc != 0)
+            return 4;
+
+        /* positions */
+        (void)get_double(td, "pos_x", &d.pos_x);
+        (void)get_double(td, "pos_y", &d.pos_y);
+        (void)get_double(td, "pos_z", &d.pos_z);
+        (void)get_double(td, "pos_t", &d.pos_t);
+
+        L->v[L->n++] = d;
+    }
+
+    return 0;
+}
+
 /* -------------------------- deck memory -------------------------- */
 
 static void lasers_init(InputLaserDeck *d)
@@ -331,6 +504,21 @@ static void lasers_push(InputLaserDeck *d, const InputLaserSpec *L)
         d->capacity = newcap;
     }
     d->items[d->count++] = *L;
+}
+
+static void field_diag_init(FieldDiagList *L)
+{
+    L->n = 0;
+    L->v = NULL;
+}
+
+static void field_diag_free(FieldDiagList *L)
+{
+    if (!L)
+        return;
+    free(L->v);
+    L->v = NULL;
+    L->n = 0;
 }
 
 /* -------------------------- defaults -------------------------- */
@@ -842,6 +1030,7 @@ int inputdeck_read(const char *path, InputSimSpec *sim)
     grid_defaults(&sim->grid);
     lasers_init(&sim->lasers);
     field_cache_defaults(&sim->field_cache);
+    field_diag_init(&sim->field_diag);
 
     char *text = read_entire_file(path);
     if (!text)
@@ -877,6 +1066,10 @@ int inputdeck_read(const char *path, InputSimSpec *sim)
     if (rc != 0)
         goto done;
 
+    rc = parse_field_diag(root, &sim->field_diag);
+    if (rc != 0)
+        goto done;
+
 done:
     toml_free(root);
     free(text);
@@ -897,6 +1090,7 @@ void inputdeck_free(InputSimSpec *sim)
     sim->lasers.items = NULL;
     sim->lasers.count = 0;
     sim->lasers.capacity = 0;
+    field_diag_free(&sim->field_diag);
 }
 
 void inputdeck_dump(const InputSimSpec *sim)

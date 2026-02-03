@@ -1,4 +1,4 @@
-#include "driver.h"
+#include "run.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -10,6 +10,7 @@
 #include "inputdeck.h"
 #include "laser_build.h"
 #include "field_cache.h"
+#include "field_diag.h"
 
 static int ensure_dir_exists_one(const char *path, MPI_Comm comm)
 {
@@ -22,7 +23,7 @@ static int ensure_dir_exists_one(const char *path, MPI_Comm comm)
         {
             if (errno != EEXIST)
             {
-                fprintf(stderr, "driver: mkdir('%s') failed: %s\n", path, strerror(errno));
+                fprintf(stderr, "run: mkdir('%s') failed: %s\n", path, strerror(errno));
                 return 9001;
             }
         }
@@ -121,72 +122,131 @@ int run_from_inputdeck(const char *toml_path, MPI_Comm comm)
 
     const LaserPulse *pulse = BuiltLasers_active(&bl);
 
-    /* Gate field_cache based on inputdeck */
+    int rank = 0;
+    MPI_Comm_rank(comm, &rank);
+
+    /* ------------------------- apply [run] working_dir ------------------------- */
+    if (strcmp(sim.run.working_dir, ".") != 0)
+    {
+        int rcd0 = ensure_dir_exists_p(sim.run.working_dir, comm);
+        if (rcd0 != 0)
+        {
+            BuiltLasers_free(&bl);
+            inputdeck_free(&sim);
+            return rcd0;
+        }
+
+        /* Enter working directory so everything becomes relative to it */
+        if (chdir(sim.run.working_dir) != 0)
+        {
+            if (rank == 0)
+                fprintf(stderr, "run: chdir('%s') failed: %s\n",
+                        sim.run.working_dir, strerror(errno));
+
+            BuiltLasers_free(&bl);
+            inputdeck_free(&sim);
+            return 9003;
+        }
+    }
+    /* ------------------------- output layout: MS/ ------------------------- */
+    {
+        int rcd = 0;
+
+        rcd = ensure_dir_exists_p("MS", comm);
+        if (rcd != 0)
+        {
+            BuiltLasers_free(&bl);
+            inputdeck_free(&sim);
+            return rcd;
+        }
+
+        rcd = ensure_dir_exists_p("MS/cache", comm);
+        if (rcd != 0)
+        {
+            BuiltLasers_free(&bl);
+            inputdeck_free(&sim);
+            return rcd;
+        }
+
+        rcd = ensure_dir_exists_p("MS/field", comm);
+        if (rcd != 0)
+        {
+            BuiltLasers_free(&bl);
+            inputdeck_free(&sim);
+            return rcd;
+        }
+    }
+
+    /* Cache directory is always "./MS/cache" inside the working directory */
+    const char *cache_dir = "MS/cache";
+
+    /* Keep sim.field_cache.out_dir consistent with the actual cache directory used. */
+    snprintf(sim.field_cache.out_dir, sizeof(sim.field_cache.out_dir), "%s", cache_dir);
+
+    /* ------------------------- gate field_cache based on inputdeck ------------ */
     const FieldCacheSpec *fc = &sim.field_cache;
 
     int rc3 = 0;
+
     if (fc->mode == FC_MODE_OFF)
     {
-        /* Nothing to do */
-        rc3 = 0;
+        /* If field diagnostics were requested, cache is required (by design). */
+        if (sim.field_diag.n > 0)
+        {
+            if (rank == 0)
+                fprintf(stderr, "run: field_diag requested but [field_cache] mode=off. "
+                                "Enable cache (auto/compute/load).\n");
+            rc3 = 1101;
+        }
+        else
+        {
+            rc3 = 0;
+        }
     }
     else if (fc->mode == FC_MODE_LOAD)
     {
         /* Not implemented yet in field_cache.c */
-        int rank = 0;
-        MPI_Comm_rank(comm, &rank);
         if (rank == 0)
         {
-            fprintf(stderr, "driver: field_cache mode=load requested, but load-path is not implemented yet.\n");
+            fprintf(stderr, "run: field_cache mode=load requested, but load-path is not implemented yet.\n");
         }
-        rc3 = 1001; /* choose a project-specific error code */
+        rc3 = 1001; /* project-specific error code */
     }
     else
     {
-        /* AUTO / COMPUTE: compute path */
+        /* AUTO / COMPUTE: compute path (or skip if write=false and no in-mem path) */
         FieldCacheOptions opt = field_cache_default_options();
 
         /*
          * For now, field_cache_run always writes files.
-         * If fc->write==false is requested, you either:
-         *  - treat it as OFF (skip), OR
-         *  - implement a no-write path in field_cache.c later.
-         *
-         * Here: skip if write=false (most honest behavior until keep_in_memory exists).
+         * If fc->write==false and keep_in_memory==false, compute has no effect.
          */
-        if (!fc->write)
+        if (!fc->write && !fc->keep_in_memory)
         {
+            /* Treat as off for now */
             rc3 = 0;
+        }
+        else if (!fc->write)
+        {
+            /*
+             * You explicitly asked to not write cache, and keep_in_memory is true.
+             * But field_diag currently reads from disk cache, so it can't run in that mode.
+             */
+            if (sim.field_diag.n > 0)
+            {
+                if (rank == 0)
+                    fprintf(stderr,
+                            "run: field_diag requested but field_cache.write=false; "
+                            "field_diag reads cache from disk. Set field_cache.write=true for now.\n");
+                rc3 = 1102;
+            }
+            else
+            {
+                rc3 = 0;
+            }
         }
         else
         {
-            /* ------------------------- apply [run] working_dir ------------------------- */
-            if (strcmp(sim.run.working_dir, ".") != 0)
-            {
-                int rcd0 = ensure_dir_exists_p(sim.run.working_dir, comm);
-                if (rcd0 != 0)
-                {
-                    BuiltLasers_free(&bl);
-                    inputdeck_free(&sim);
-                    return rcd0;
-                }
-
-                /* Enter working directory so everything becomes relative to it */
-                if (chdir(sim.run.working_dir) != 0)
-                {
-                    int rank = 0;
-                    MPI_Comm_rank(comm, &rank);
-                    if (rank == 0)
-                        fprintf(stderr, "driver: chdir('%s') failed: %s\n", sim.run.working_dir, strerror(errno));
-
-                    BuiltLasers_free(&bl);
-                    inputdeck_free(&sim);
-                    return 9003;
-                }
-            }
-
-            /* Cache directory is always "./cache" inside the working directory */
-            const char *cache_dir = "cache";
             int rcd = ensure_dir_exists_p(cache_dir, comm);
             if (rcd != 0)
             {
@@ -194,21 +254,6 @@ int run_from_inputdeck(const char *toml_path, MPI_Comm comm)
                 inputdeck_free(&sim);
                 return rcd;
             }
-
-            /* ------------------------- field_cache mode logic -------------------------- */
-            const FieldCacheSpec *fc = &sim.field_cache;
-
-            /* If we are not writing and not keeping in memory, compute has no effect currently */
-            if (!fc->write && !fc->keep_in_memory)
-            {
-                /* Treat as off for now */
-                BuiltLasers_free(&bl);
-                inputdeck_free(&sim);
-                return 0;
-            }
-
-            int rank = 0;
-            MPI_Comm_rank(comm, &rank);
 
             int have_cache = 0;
             if (rank == opt.root_rank)
@@ -227,7 +272,7 @@ int run_from_inputdeck(const char *toml_path, MPI_Comm comm)
                 {
                     if (rank == opt.root_rank)
                         fprintf(stderr,
-                                "driver: field_cache mode=load but cache is missing in %s/\n",
+                                "run: field_cache mode=load but cache is missing in %s/\n",
                                 cache_dir);
                     rc3 = 1002;
                 }
@@ -235,7 +280,7 @@ int run_from_inputdeck(const char *toml_path, MPI_Comm comm)
                 {
                     if (rank == opt.root_rank)
                     {
-                        printf("driver: field_cache load successful (cache found in %s/)\n",
+                        printf("run: field_cache load successful (cache found in %s/)\n",
                                cache_dir);
                         fflush(stdout);
                     }
@@ -248,7 +293,7 @@ int run_from_inputdeck(const char *toml_path, MPI_Comm comm)
                 {
                     if (rank == opt.root_rank)
                     {
-                        printf("driver: field_cache auto mode — using existing cache in %s/\n",
+                        printf("run: field_cache auto mode — using existing cache in %s/\n",
                                cache_dir);
                         fflush(stdout);
                     }
@@ -258,16 +303,17 @@ int run_from_inputdeck(const char *toml_path, MPI_Comm comm)
                 {
                     if (rank == opt.root_rank)
                     {
-                        printf("driver: field_cache auto mode — no cache found, computing cache\n");
+                        printf("run: field_cache auto mode — no cache found, computing cache\n");
                         fflush(stdout);
                     }
                     rc3 = field_cache_run(&sim, pulse, cache_dir, &opt, comm);
                 }
                 break;
+
             case FC_MODE_COMPUTE:
                 if (rank == opt.root_rank)
                 {
-                    printf("driver: field_cache compute mode — recomputing cache in %s/\n",
+                    printf("run: field_cache compute mode — recomputing cache in %s/\n",
                            cache_dir);
                     fflush(stdout);
                 }
@@ -275,6 +321,34 @@ int run_from_inputdeck(const char *toml_path, MPI_Comm comm)
                 break;
             }
         }
+    }
+
+    /* ------------------------- run field diagnostics from cache --------------- */
+    if (rc3 == 0 && sim.field_diag.n > 0)
+    {
+        /* Outputs go to ./MS (inside working_dir). */
+        int rcd = ensure_dir_exists_p("MS", comm);
+        if (rcd != 0)
+        {
+            BuiltLasers_free(&bl);
+            inputdeck_free(&sim);
+            return rcd;
+        }
+
+        FieldDiagOptions fdopt = field_diag_default_options();
+        fdopt.root_rank = 0;
+        fdopt.write_time_iter_0 = 1;
+
+        if (rank == fdopt.root_rank)
+        {
+            printf("run: field_diag — writing %d diagnostic(s) to diag/ (prefix diag/fields)\n",
+                   sim.field_diag.n);
+            fflush(stdout);
+        }
+
+        int fdr = field_diag_run_from_cache(&sim, "MS/field", &fdopt, comm);
+        if (fdr != 0 && rc3 == 0)
+            rc3 = 1200 + fdr;
     }
 
     BuiltLasers_free(&bl);
