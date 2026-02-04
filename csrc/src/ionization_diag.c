@@ -1,4 +1,4 @@
-#include "ionization_grid.h"
+#include "ionization_diag.h"
 
 #include <hdf5.h>
 #include <math.h>
@@ -311,7 +311,7 @@ int iongrid_run_full_from_cache(const InputSimSpec *sim,
     int Zmax = 0;
     if (infer_Zmax_from_tables(sim->run.gas, &Zmax) != 0)
     {
-        fprintf(stderr, "ionization_grid: unsupported gas \"%s\" (no ADK table)\n", sim->run.gas);
+        fprintf(stderr, "ionization_diag: unsupported gas \"%s\" (no ADK table)\n", sim->run.gas);
         MPI_Barrier(comm);
         return 2;
     }

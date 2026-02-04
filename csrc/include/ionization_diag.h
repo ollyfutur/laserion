@@ -11,7 +11,7 @@ extern "C" {
 #endif
 
 /* -------------------------- options -------------------------- */
-/* Keep this struct compatible with your existing ionization_grid.c usage. */
+/* Keep this struct compatible with your existing ionization_diag.c usage. */
 typedef struct IonGridOptions
 {
     /* Species name (e.g., "He"). Must match ionization_model.c tables. */

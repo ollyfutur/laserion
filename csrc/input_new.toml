@@ -11,11 +11,8 @@ gas = "He"
 # =========================
 
 [field_cache]
-mode = "auto"          # "auto" | "compute" | "load" | "off"
-write = true           # if computing: write HDF5 outputs
-keep_in_memory = false # later: retain cache blocks for diagnostics
-block_t = 64           # later: block size in timesteps for streaming/diagnostics
-
+mode = "auto" # "auto" | "compute" | "load" | "off"
+write = true  # if computing: write HDF5 outputs
 
 # ==============================
 # 2) Temporal/Spatial parameters
@@ -87,3 +84,23 @@ pos_t = 10.0
 # =========================
 
 [ionization_frac]
+
+# =========================
+# 6) Phase-space diagnostic
+# =========================
+
+[[phase_space]]
+
+phase_space = "pz" # "px", "py", "pz", "pxpy", "pxpz", "pypz" (order matters)
+#region = { xmin = -5, xmax = 5, zmin = -5, zmax = 5 } # Spatial region (if it is over the cache bounds, goes to the edge of the cache) and ignores the coordinate not in the simulation. This is optional, if omitted defaults to entire cache region.
+envelope_cut = 1e-6                            # ignore points where envelope is below threshold
+bins1 = { nbins = 600, min = -2.0, max = 2.0 }
+# bins2 = { nbins=600, min=-2.0, max=2.0 }                    # only for 2D phase space
+
+[[phase_space]]
+
+phase_space = "pxpy"                                                      # "px", "py", "pz", "pxpy", "pxpz", "pypz" (order matters)
+region = { xmin = -5, xmax = 5, ymin = 0, ymax = 1, zmin = -5, zmax = 5 } # Spatial region (if it is over the cache bounds, goes to the edge of the cache) and ignores the coordinate not in the simulation. This is optional, if omitted defaults to entire cache region.
+envelope_cut = 1e-6                                                       # ignore points where envelope is below threshold
+bins1 = { nbins = 600, min = -2.0, max = 2.0 }
+bins2 = { nbins = 600, min = -2.0, max = 2.0 }                            # only for 2D phase space

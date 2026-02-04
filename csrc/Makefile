@@ -70,7 +70,7 @@ LIB_SRCS := \
 	$(SRC_DIR)/diag_h5.c \
 	$(SRC_DIR)/diag_grid.c \
       $(SRC_DIR)/field_diag.c \
-      $(SRC_DIR)/ionization_grid.c \
+      $(SRC_DIR)/ionization_diag.c \
 	$(SRC_DIR)/mdf.c \
 	$(SRC_DIR)/mdf_grid.c \
       $(SRC_DIR)/mdf_particles.c \

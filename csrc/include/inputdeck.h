@@ -175,6 +175,57 @@ extern "C"
         bool enabled;    /* present [ionization_frac] table */
     } IonFracSpec;
 
+/* -------------------------- Phase-space (MDF) diagnostics -------------------------- */
+
+    typedef enum
+    {
+        PHASESPACE_PX    = 0,
+        PHASESPACE_PY    = 1,
+        PHASESPACE_PZ    = 2,
+
+        /* 2D ordered pairs (order matters) */
+        PHASESPACE_PX_PY = 3,
+        PHASESPACE_PY_PX = 4,
+
+        PHASESPACE_PX_PZ = 5,
+        PHASESPACE_PZ_PX = 6,
+
+        PHASESPACE_PY_PZ = 7,
+        PHASESPACE_PZ_PY = 8
+    } PhaseSpaceKind;
+
+    typedef struct
+    {
+        PhaseSpaceKind kind;
+
+        /* Optional spatial region (um). If omitted, runtime can default to full cache region. */
+        bool has_region;
+        double xmin, xmax;
+        double ymin, ymax;
+        double zmin, zmax;
+
+        /* Ignore points where envelope is below threshold */
+        double envelope_cut;
+
+        /* Momentum binning [m_e c] */
+        int nbins1;
+        double p1min, p1max;
+
+        bool has_bins2;
+        int nbins2;
+        double p2min, p2max;
+
+        /* Optional normalization: sum(f)=1 */
+        bool normalize_sum_to_1;
+    } PhaseSpaceSpec;
+
+    typedef struct
+    {
+        int n;
+        PhaseSpaceSpec *v;
+    } PhaseSpaceList;
+
+
     typedef struct
     {
         RunSpec run;
@@ -183,7 +234,7 @@ extern "C"
         FieldCacheSpec field_cache;
         FieldDiagList field_diag;
         IonFracSpec ionization_frac;
-        // Future: diagnostics, outputs, species, etc.
+        PhaseSpaceList phase_space;
     } InputSimSpec;
 
     /**

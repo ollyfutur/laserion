@@ -11,7 +11,7 @@
 #include "laser_build.h"
 #include "field_cache.h"
 #include "field_diag.h"
-#include "ionization_grid.h"
+#include "ionization_diag.h"
 #include "ionization_model.h"
 
 static void print_field_diag_requests(const FieldDiagList *L, MPI_Comm comm)

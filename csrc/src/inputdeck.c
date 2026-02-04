@@ -296,6 +296,36 @@ static int parse_sense(const char *s, PolarizationSense *out)
     return 1;
 }
 
+static int parse_phase_space_kind(const char *s, PhaseSpaceKind *out)
+{
+    if (!s) return 1;
+
+    /* 1D */
+    if (streqi(s, "px")) { *out = PHASESPACE_PX; return 0; }
+    if (streqi(s, "py")) { *out = PHASESPACE_PY; return 0; }
+    if (streqi(s, "pz")) { *out = PHASESPACE_PZ; return 0; }
+
+    /* 2D ordered pairs (order matters) */
+    if (streqi(s, "pxpy")) { *out = PHASESPACE_PX_PY; return 0; }
+    if (streqi(s, "pypx")) { *out = PHASESPACE_PY_PX; return 0; }
+
+    if (streqi(s, "pxpz")) { *out = PHASESPACE_PX_PZ; return 0; }
+    if (streqi(s, "pzpx")) { *out = PHASESPACE_PZ_PX; return 0; }
+
+    if (streqi(s, "pypz")) { *out = PHASESPACE_PY_PZ; return 0; }
+    if (streqi(s, "pzpy")) { *out = PHASESPACE_PZ_PY; return 0; }
+
+    return 2;
+}
+
+static bool phasespace_is_2d(PhaseSpaceKind k)
+{
+    return (k == PHASESPACE_PX_PY) || (k == PHASESPACE_PY_PX) ||
+           (k == PHASESPACE_PX_PZ) || (k == PHASESPACE_PZ_PX) ||
+           (k == PHASESPACE_PY_PZ) || (k == PHASESPACE_PZ_PY);
+}
+
+
 /* -------------------------- field_cache defaults/parse -------------------------- */
 
 static void run_defaults(RunSpec *r)
@@ -536,6 +566,157 @@ static int parse_ionization_frac(toml_table_t *root, IonFracSpec *s)
     return 0;
 }
 
+static int parse_bins_table(toml_table_t *t, const char *key, int *nbins, double *vmin, double *vmax)
+{
+    toml_table_t *tb = toml_table_in(t, key);
+    if (!tb) return 0; /* missing */
+
+    int n;
+    if (!get_int(tb, "nbins", &n) || n <= 0) return -1;
+
+    double a, b;
+    if (!get_double(tb, "min", &a)) return -2;
+    if (!get_double(tb, "max", &b)) return -3;
+    if (!(b > a)) return -4;
+
+    *nbins = n;
+    *vmin  = a;
+    *vmax  = b;
+    return 1;
+}
+
+static int parse_phase_space(toml_table_t *root, PhaseSpaceList *L)
+{
+    toml_array_t *arr = toml_array_in(root, "phase_space");
+    if (!arr) return 0; /* optional */
+
+    int n = toml_array_nelem(arr);
+    if (n <= 0) return 0;
+
+    L->v = (PhaseSpaceSpec *)xmalloc((size_t)n * sizeof(PhaseSpaceSpec));
+    L->n = 0;
+
+    for (int i = 0; i < n; ++i)
+    {
+        toml_table_t *td = toml_table_at(arr, i);
+        if (!td)
+        {
+            fprintf(stderr, "inputdeck: phase_space[%d] is not a table\n", i);
+            return 1;
+        }
+
+        PhaseSpaceSpec d;
+        memset(&d, 0, sizeof(d));
+        d.has_region = false;
+        d.envelope_cut = 0.0;
+        d.normalize_sum_to_1 = false;
+
+        /* kind string: phase_space="pxpz" etc */
+        char *ps = get_string_dup(td, "phase_space");
+        if (!ps)
+        {
+            fprintf(stderr, "inputdeck: phase_space[%d] missing key phase_space\n", i);
+            return 2;
+        }
+
+        if (parse_phase_space_kind(ps, &d.kind) != 0)
+        {
+            fprintf(stderr,
+                    "inputdeck: phase_space[%d] invalid phase_space=\"%s\" "
+                    "(use px,py,pz,pxpy,pypx,pxpz,pzpx,pypz,pzpy)\n",
+                    i, ps);
+            free(ps);
+            return 3;
+        }
+        free(ps);
+
+        /* optional region table */
+        toml_table_t *tr = toml_table_in(td, "region");
+        if (tr)
+        {
+            d.has_region = true;
+
+            /* defaults allow “clip to cache bounds” later */
+            d.xmin = -INFINITY; d.xmax = +INFINITY;
+            d.ymin = -INFINITY; d.ymax = +INFINITY;
+            d.zmin = -INFINITY; d.zmax = +INFINITY;
+
+            (void)get_double(tr, "xmin", &d.xmin);
+            (void)get_double(tr, "xmax", &d.xmax);
+            (void)get_double(tr, "ymin", &d.ymin);
+            (void)get_double(tr, "ymax", &d.ymax);
+            (void)get_double(tr, "zmin", &d.zmin);
+            (void)get_double(tr, "zmax", &d.zmax);
+
+            /* sanity only if bounds are finite */
+            if (isfinite(d.xmin) && isfinite(d.xmax) && !(d.xmax > d.xmin))
+            {
+                fprintf(stderr, "inputdeck: phase_space[%d] region.xmax must be > xmin\n", i);
+                return 4;
+            }
+            if (isfinite(d.ymin) && isfinite(d.ymax) && !(d.ymax > d.ymin))
+            {
+                fprintf(stderr, "inputdeck: phase_space[%d] region.ymax must be > ymin\n", i);
+                return 5;
+            }
+            if (isfinite(d.zmin) && isfinite(d.zmax) && !(d.zmax > d.zmin))
+            {
+                fprintf(stderr, "inputdeck: phase_space[%d] region.zmax must be > zmin\n", i);
+                return 6;
+            }
+        }
+
+        (void)get_double(td, "envelope_cut", &d.envelope_cut);
+        (void)get_bool(td, "normalize_sum_to_1", &d.normalize_sum_to_1);
+
+        /* bins1 required */
+        int rr = parse_bins_table(td, "bins1", &d.nbins1, &d.p1min, &d.p1max);
+        if (rr <= 0)
+        {
+            fprintf(stderr, "inputdeck: phase_space[%d] missing bins1={nbins,min,max}\n", i);
+            return 7;
+        }
+        if (rr < 0)
+        {
+            fprintf(stderr, "inputdeck: phase_space[%d] invalid bins1\n", i);
+            return 8;
+        }
+
+        /* bins2 required iff 2D kind */
+        d.has_bins2 = false;
+        rr = parse_bins_table(td, "bins2", &d.nbins2, &d.p2min, &d.p2max);
+
+        if (phasespace_is_2d(d.kind))
+        {
+            if (rr <= 0)
+            {
+                fprintf(stderr, "inputdeck: phase_space[%d] 2D kind requires bins2={nbins,min,max}\n", i);
+                return 9;
+            }
+            if (rr < 0)
+            {
+                fprintf(stderr, "inputdeck: phase_space[%d] invalid bins2\n", i);
+                return 10;
+            }
+            d.has_bins2 = true;
+        }
+        else
+        {
+            /* strict: bins2 is not allowed for 1D */
+            if (rr > 0)
+            {
+                fprintf(stderr, "inputdeck: phase_space[%d] bins2 is only valid for 2D phase_space kinds\n", i);
+                return 11;
+            }
+        }
+
+        L->v[L->n++] = d;
+    }
+
+    return 0;
+}
+
+
 
 /* -------------------------- deck memory -------------------------- */
 
@@ -572,6 +753,19 @@ static void field_diag_free(FieldDiagList *L)
     L->n = 0;
 }
 
+static void phase_space_init(PhaseSpaceList *L)
+{
+    L->n = 0;
+    L->v = NULL;
+}
+
+static void phase_space_free(PhaseSpaceList *L)
+{
+    if (!L) return;
+    free(L->v);
+    L->v = NULL;
+    L->n = 0;
+}
 
 /* -------------------------- defaults -------------------------- */
 
@@ -1084,6 +1278,8 @@ int inputdeck_read(const char *path, InputSimSpec *sim)
     field_cache_defaults(&sim->field_cache);
     field_diag_init(&sim->field_diag);
     sim->ionization_frac.enabled = false;
+    phase_space_init(&sim->phase_space);
+
 
 
     char *text = read_entire_file(path);
@@ -1128,6 +1324,11 @@ int inputdeck_read(const char *path, InputSimSpec *sim)
     if (rc != 0)
         goto done;
 
+    rc = parse_phase_space(root, &sim->phase_space);
+    if (rc != 0)
+        goto done;
+
+
 done:
     toml_free(root);
     free(text);
@@ -1149,6 +1350,7 @@ void inputdeck_free(InputSimSpec *sim)
     sim->lasers.count = 0;
     sim->lasers.capacity = 0;
     field_diag_free(&sim->field_diag);
+    phase_space_free(&sim->phase_space);
 }
 
 void inputdeck_dump(const InputSimSpec *sim)
@@ -1214,6 +1416,32 @@ void inputdeck_dump(const InputSimSpec *sim)
     }
     printf("\n[ionization_frac]\n");
     printf("  enabled=%s\n", sim->ionization_frac.enabled ? "true" : "false");
+    printf("\n[phase_space] n=%d\n", sim->phase_space.n);
+    for (int i = 0; i < sim->phase_space.n; ++i)
+    {
+        const PhaseSpaceSpec *p = &sim->phase_space.v[i];
+        const char *k = "?";
+        switch (p->kind)
+        {
+            case PHASESPACE_PX: k="px"; break;
+            case PHASESPACE_PY: k="py"; break;
+            case PHASESPACE_PZ: k="pz"; break;
+            case PHASESPACE_PX_PY: k="pxpy"; break;
+            case PHASESPACE_PY_PX: k="pypx"; break;
+            case PHASESPACE_PX_PZ: k="pxpz"; break;
+            case PHASESPACE_PZ_PX: k="pzpx"; break;
+            case PHASESPACE_PY_PZ: k="pypz"; break;
+            case PHASESPACE_PZ_PY: k="pzpy"; break;
+        }
+        printf("  [%d] kind=%s envelope_cut=%g norm=%s\n", i, k, p->envelope_cut,
+            p->normalize_sum_to_1 ? "true" : "false");
+        if (p->has_region)
+            printf("      region x=[%g,%g] y=[%g,%g] z=[%g,%g]\n",
+                p->xmin,p->xmax,p->ymin,p->ymax,p->zmin,p->zmax);
+        printf("      bins1 nbins=%d [%g,%g]\n", p->nbins1, p->p1min, p->p1max);
+        if (p->has_bins2)
+            printf("      bins2 nbins=%d [%g,%g]\n", p->nbins2, p->p2min, p->p2max);
+    }
 }
 
 /* -------------------------- optional test main -------------------------- */
