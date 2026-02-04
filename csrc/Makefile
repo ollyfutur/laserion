@@ -7,8 +7,8 @@ BIN_DIR   := bin
 
 # ================= Compiler ==============================================
 
-##MPICC := /opt/openmpi/gcc-14.2.0/bin/mpicc
-MPICC := /opt/homebrew/bin/mpicc
+MPICC := /opt/openmpi/gcc-14.2.0/bin/mpicc
+##MPICC := /opt/homebrew/bin/mpicc
 CC    := $(MPICC)
 
 

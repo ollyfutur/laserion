@@ -380,7 +380,6 @@ static int parse_run(toml_table_t *root, RunSpec *r)
         }
     }
 
-    // ionization_model (NEW)
     {
         toml_datum_t d = toml_string_in(tr, "ionization_model");
         if (d.ok)
@@ -390,7 +389,6 @@ static int parse_run(toml_table_t *root, RunSpec *r)
         }
     }
 
-    // Validate ionization_model
     if (strcmp(r->ionization_model, "adk") != 0)
     {
         fprintf(stderr,
@@ -526,6 +524,19 @@ static int parse_field_diag(toml_table_t *root, FieldDiagList *L)
     return 0;
 }
 
+static int parse_ionization_frac(toml_table_t *root, IonFracSpec *s)
+{
+    toml_table_t *t = toml_table_in(root, "ionization_frac");
+    if (!t)
+    {
+        s->enabled = false;
+        return 0;
+    }
+    s->enabled = true;
+    return 0;
+}
+
+
 /* -------------------------- deck memory -------------------------- */
 
 static void lasers_init(InputLaserDeck *d)
@@ -560,6 +571,7 @@ static void field_diag_free(FieldDiagList *L)
     L->v = NULL;
     L->n = 0;
 }
+
 
 /* -------------------------- defaults -------------------------- */
 
@@ -1071,6 +1083,8 @@ int inputdeck_read(const char *path, InputSimSpec *sim)
     lasers_init(&sim->lasers);
     field_cache_defaults(&sim->field_cache);
     field_diag_init(&sim->field_diag);
+    sim->ionization_frac.enabled = false;
+
 
     char *text = read_entire_file(path);
     if (!text)
@@ -1107,6 +1121,10 @@ int inputdeck_read(const char *path, InputSimSpec *sim)
         goto done;
 
     rc = parse_field_diag(root, &sim->field_diag);
+    if (rc != 0)
+        goto done;
+
+    rc = parse_ionization_frac(root, &sim->ionization_frac);
     if (rc != 0)
         goto done;
 
@@ -1194,6 +1212,8 @@ void inputdeck_dump(const InputSimSpec *sim)
         if (L->has_jones)
             printf("    Jones: p1=%g p2=%g delta=%g\n", L->p1, L->p2, L->delta);
     }
+    printf("\n[ionization_frac]\n");
+    printf("  enabled=%s\n", sim->ionization_frac.enabled ? "true" : "false");
 }
 
 /* -------------------------- optional test main -------------------------- */

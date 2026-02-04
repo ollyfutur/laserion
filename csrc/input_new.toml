@@ -22,8 +22,8 @@ block_t = 64           # later: block size in timesteps for streaming/diagnostic
 # ==============================
 
 [grid]
-t_min = -20.0
-t_max = 20.0
+t_min = -200.0
+t_max = 200.0
 dt = 0.02
 
 # 1D: "x","y","z" ; 2D: "xy","xz","yz" (and permutations)
@@ -33,12 +33,12 @@ fixed = { x = 0.0, y = 0.0, z = 0.0 }
 
 # Axis definitions:
 # ax1 corresponds to first letter in spatial_axes, ax2 to second letter (if present)
-ax1_min = -2.0
-ax1_max = 2.0
+ax1_min = -0.5
+ax1_max = 0.5
 dx1 = 0.02
 
-ax2_min = -1.0
-ax2_max = 1.0
+ax2_min = -0.5
+ax2_max = 0.5
 dx2 = 0.02
 # For 1D, omit ax2_*.
 
@@ -48,7 +48,7 @@ dx2 = 0.02
 
 [[laser]]
 type = "standard"
-E0 = 100.0
+E0 = 200.0
 wavelength = 0.8
 phase0 = 0.0
 k_vec = [0.0, 0.0, 1.0]
@@ -62,52 +62,28 @@ zf = 0.0
 polarization = "linear"      # "linear" | "circular" | "Jones"
 angle = 0.0
 
-[[laser]]
-type = "standard"
-E0 = 50.0
-wavelength = 1.0
-phase0 = 20.0
-k_vec = [0.0, 0.0, 1.0]
-r_start = [0.0, 0.0, 0.0]
-use_retarded_time = true
-temporal_type = "gaussian"
-tau = 50.0
-transverse_type = "hermite"
-w0 = 8.0
-zf = 0.0
-herm_lm = [0, 1]
-polarization = "Jones"
-angle = 50.0
-p1 = 1.0
-p2 = 0.7
-delta = 90.0
-
-
 # ====================
 # 4) Field diagnostics
 # ====================
 
 [[field_diag]]
-components = ["Ex", "Ay", "Az"]
-axes = "tx"
-pos_x = 0.0
+components = ["Ex", "Ey"]
+axes = "tz"
+pos_x = 0.10
 pos_y = 0.0
 pos_z = 0.0
-pos_t = 10.0
+pos_t = 0
 
 [[field_diag]]
-components = ["Ex"]
+components = ["Ex", "Ey"]
 axes = "t"
-pos_x = 0.5
+pos_x = 0
 pos_y = 0.0
-pos_z = 0.2
+pos_z = 0
 pos_t = 10.0
 
+# =========================
+# 5) Ionization diagnostics
+# =========================
 
-[[field_diag]]
-components = ["Ex"]
-axes = "z"
-pos_x = 0.0
-pos_y = 0.0
-pos_z = 0.0
-pos_t = 10.0
+[ionization_frac]

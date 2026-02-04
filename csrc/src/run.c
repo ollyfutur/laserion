@@ -11,6 +11,8 @@
 #include "laser_build.h"
 #include "field_cache.h"
 #include "field_diag.h"
+#include "ionization_grid.h"
+#include "ionization_model.h"
 
 static void print_field_diag_requests(const FieldDiagList *L, MPI_Comm comm)
 {
@@ -172,6 +174,10 @@ int run_from_inputdeck(const char *toml_path, MPI_Comm comm)
         fflush(stdout);
     }
 
+    /* rc_main: hard failures (cannot proceed). rc_diag: diagnostics failures (do not block others). */
+    int rc_main = 0;
+    int rc_diag = 0;
+
     /* ------------------------- apply [run] working_dir ------------------------- */
     if (strcmp(sim.run.working_dir, ".") != 0)
     {
@@ -195,6 +201,7 @@ int run_from_inputdeck(const char *toml_path, MPI_Comm comm)
             return 9003;
         }
     }
+
     /* ------------------------- output layout: MS/ ------------------------- */
     {
         int rcd = 0;
@@ -222,6 +229,14 @@ int run_from_inputdeck(const char *toml_path, MPI_Comm comm)
             inputdeck_free(&sim);
             return rcd;
         }
+
+        rcd = ensure_dir_exists_p("MS/ioniz_frac", comm);
+        if (rcd != 0)
+        {
+            BuiltLasers_free(&bl);
+            inputdeck_free(&sim);
+            return rcd;
+        }
     }
 
     /* Cache directory is always "./MS/cache" inside the working directory */
@@ -233,21 +248,20 @@ int run_from_inputdeck(const char *toml_path, MPI_Comm comm)
     /* ------------------------- gate field_cache based on inputdeck ------------ */
     const FieldCacheSpec *fc = &sim.field_cache;
 
-    int rc3 = 0;
-
     if (fc->mode == FC_MODE_OFF)
     {
-        /* If field diagnostics were requested, cache is required (by design). */
-        if (sim.field_diag.n > 0)
+        /* If any cache-based diagnostics were requested, cache is required (by design). */
+        if (sim.field_diag.n > 0 || sim.ionization_frac.enabled)
         {
             if (rank == 0)
-                fprintf(stderr, "run: field_diag requested but [field_cache] mode=off. "
-                                "Enable cache (auto/compute/load).\n");
-            rc3 = 1101;
+                fprintf(stderr,
+                        "run: diagnostics requested but [field_cache] mode=off. "
+                        "Enable cache (auto/compute/load).\n");
+            rc_main = 1101;
         }
         else
         {
-            rc3 = 0;
+            rc_main = 0;
         }
     }
     else if (fc->mode == FC_MODE_LOAD)
@@ -257,7 +271,7 @@ int run_from_inputdeck(const char *toml_path, MPI_Comm comm)
         {
             fprintf(stderr, "run: field_cache mode=load requested, but load-path is not implemented yet.\n");
         }
-        rc3 = 1001; /* project-specific error code */
+        rc_main = 1001; /* project-specific error code */
     }
     else
     {
@@ -271,25 +285,25 @@ int run_from_inputdeck(const char *toml_path, MPI_Comm comm)
         if (!fc->write && !fc->keep_in_memory)
         {
             /* Treat as off for now */
-            rc3 = 0;
+            rc_main = 0;
         }
         else if (!fc->write)
         {
             /*
              * You explicitly asked to not write cache, and keep_in_memory is true.
-             * But field_diag currently reads from disk cache, so it can't run in that mode.
+             * But field_diag and ionization_frac currently read from disk cache, so they can't run in that mode.
              */
-            if (sim.field_diag.n > 0)
+            if (sim.field_diag.n > 0 || sim.ionization_frac.enabled)
             {
                 if (rank == 0)
                     fprintf(stderr,
-                            "run: field_diag requested but field_cache.write=false; "
-                            "field_diag reads cache from disk. Set field_cache.write=true for now.\n");
-                rc3 = 1102;
+                            "run: diagnostics requested but field_cache.write=false; "
+                            "diagnostics read cache from disk. Set field_cache.write=true for now.\n");
+                rc_main = 1102;
             }
             else
             {
-                rc3 = 0;
+                rc_main = 0;
             }
         }
         else
@@ -311,7 +325,7 @@ int run_from_inputdeck(const char *toml_path, MPI_Comm comm)
             switch (fc->mode)
             {
             case FC_MODE_OFF:
-                rc3 = 0;
+                rc_main = 0;
                 break;
 
             case FC_MODE_LOAD:
@@ -321,7 +335,7 @@ int run_from_inputdeck(const char *toml_path, MPI_Comm comm)
                         fprintf(stderr,
                                 "run: field_cache mode=load but cache is missing in %s/\n",
                                 cache_dir);
-                    rc3 = 1002;
+                    rc_main = 1002;
                 }
                 else
                 {
@@ -331,7 +345,7 @@ int run_from_inputdeck(const char *toml_path, MPI_Comm comm)
                                cache_dir);
                         fflush(stdout);
                     }
-                    rc3 = 0;
+                    rc_main = 0;
                 }
                 break;
 
@@ -344,7 +358,7 @@ int run_from_inputdeck(const char *toml_path, MPI_Comm comm)
                                cache_dir);
                         fflush(stdout);
                     }
-                    rc3 = 0;
+                    rc_main = 0;
                 }
                 else
                 {
@@ -353,7 +367,7 @@ int run_from_inputdeck(const char *toml_path, MPI_Comm comm)
                         printf("run: field_cache auto mode — no cache found, computing cache\n");
                         fflush(stdout);
                     }
-                    rc3 = field_cache_run(&sim, pulse, cache_dir, &opt, comm);
+                    rc_main = field_cache_run(&sim, pulse, cache_dir, &opt, comm);
                 }
                 break;
 
@@ -364,44 +378,87 @@ int run_from_inputdeck(const char *toml_path, MPI_Comm comm)
                            cache_dir);
                     fflush(stdout);
                 }
-                rc3 = field_cache_run(&sim, pulse, cache_dir, &opt, comm);
+                rc_main = field_cache_run(&sim, pulse, cache_dir, &opt, comm);
                 break;
             }
         }
     }
 
-    /* ------------------------- run field diagnostics from cache --------------- */
-    if (rc3 == 0 && sim.field_diag.n > 0)
+    /* If cache/setup failed, we cannot run cache-based diagnostics. */
+    if (rc_main != 0)
     {
-        /* Outputs go to ./MS (inside working_dir). */
-        int rcd = ensure_dir_exists_p("MS", comm);
-        if (rcd != 0)
-        {
-            BuiltLasers_free(&bl);
-            inputdeck_free(&sim);
-            return rcd;
-        }
+        if (rank == 0)
+            fprintf(stderr, "run: aborting due to earlier error (rc=%d)\n", rc_main);
 
+        BuiltLasers_free(&bl);
+        inputdeck_free(&sim);
+        return rc_main;
+    }
+
+    /* ------------------------- run field diagnostics from cache --------------- */
+    if (sim.field_diag.n > 0)
+    {
         FieldDiagOptions fdopt = field_diag_default_options();
         fdopt.root_rank = 0;
         fdopt.write_time_iter_0 = 1;
 
         if (rank == fdopt.root_rank)
         {
-            printf("run: field_diag — writing %d diagnostic(s) to diag/ (prefix diag/fields)\n",
+            printf("run: field_diag — writing %d diagnostic(s) to MS/field\n",
                    sim.field_diag.n);
             print_field_diag_requests(&sim.field_diag, comm);
+            printf("\n");
             fflush(stdout);
         }
-        printf("\n");
+
         int fdr = field_diag_run_from_cache(&sim, "MS/field", &fdopt, comm);
-        if (fdr != 0 && rc3 == 0)
-            rc3 = 1200 + fdr;
+        if (fdr != 0)
+        {
+            /* Record but do NOT block ionization diagnostics. */
+            if (rc_diag == 0)
+                rc_diag = 1200 + fdr;
+
+            if (rank == fdopt.root_rank)
+            {
+                fprintf(stderr, "run: field_diag failed (rc=%d), continuing with other diagnostics\n", 1200 + fdr);
+                fflush(stderr);
+            }
+        }
     }
 
-    printf("run: done!\n");
+    /* ------------------------- run ionization fraction diagnostics ------------ */
+    if (sim.ionization_frac.enabled)
+    {
+        if (rank == 0)
+        {
+            printf("run: ionization_frac enabled — computing from cache in %s/ to %s/\n",
+                   "MS/cache", "MS/ioniz_frac");
+            fflush(stdout);
+        }
+
+        int irc = iongrid_run_full_from_cache(&sim, "MS/cache", "MS/ioniz_frac", comm);
+        if (irc != 0)
+        {
+            if (rc_diag == 0)
+                rc_diag = 2000 + irc;
+
+            if (rank == 0)
+            {
+                fprintf(stderr, "run: ionization_frac failed (rc=%d)\n", 2000 + irc);
+                fflush(stderr);
+            }
+        }
+    }
+
+    if (rank == 0)
+    {
+        printf("run: done!\n");
+        fflush(stdout);
+    }
 
     BuiltLasers_free(&bl);
     inputdeck_free(&sim);
-    return rc3;
+
+    /* Prefer returning any diagnostic failure now that cache/setup succeeded. */
+    return rc_diag;
 }

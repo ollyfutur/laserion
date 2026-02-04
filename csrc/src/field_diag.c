@@ -380,6 +380,42 @@ static void set_sem_indices_for_axis(char axc, size_t val,
         *i2 = val;
 }
 
+static int value_in_range(double v, double vmin, double vmax, double dv)
+{
+    /* accept a tiny tolerance; also allow half-cell beyond endpoints */
+    const double tol = 1e-12;
+    const double pad = 0.5 * (dv > 0.0 ? dv : 0.0);
+    return (v >= (vmin - pad - tol)) && (v <= (vmax + pad + tol));
+}
+
+static int check_fixed_axis_in_cache(const InputGridSpec *g,
+                                     char axis_char, double pos)
+{
+    axis_char = (char)tolower((unsigned char)axis_char);
+
+    if (axis_char == 't')
+        return value_in_range(pos, g->t_min, g->t_max, g->dt) ? 0 : 1;
+
+    /* spatial: map to ax1/ax2 if present */
+    Axis a;
+    if (axis_char_to_grid_axis(axis_char, &a) != 0)
+        return 2;
+
+    if (a == g->ax1)
+        return value_in_range(pos, g->ax1_min, g->ax1_max, g->dx1) ? 0 : 1;
+
+    if (g->has_ax2 && a == g->ax2)
+        return value_in_range(pos, g->ax2_min, g->ax2_max, g->dx2) ? 0 : 1;
+
+    /* axis not represented in cache => it must equal the fixed coordinate used to build cache */
+    if (a == AXIS_X) return (fabs(pos - g->fixed_x) < 1e-12) ? 0 : 3;
+    if (a == AXIS_Y) return (fabs(pos - g->fixed_y) < 1e-12) ? 0 : 3;
+    if (a == AXIS_Z) return (fabs(pos - g->fixed_z) < 1e-12) ? 0 : 3;
+
+    return 2;
+}
+
+
 /* -------------------------- slicing core --------------------------------- */
 
 static int slice_component_from_cache(const InputSimSpec *sim,
@@ -536,6 +572,35 @@ static int slice_component_from_cache(const InputSimSpec *sim,
             vary_1 = 1;
         else if (has_ax2 && asp == sim_ax2)
             vary_2 = 1;
+    }
+
+    if (!vary_t)
+    {
+        if (check_fixed_axis_in_cache(g, 't', d->pos_t) != 0)
+        {
+            H5Sclose(fspace); H5Dclose(dset); H5Fclose(f);
+            return 40; /* out of cached t-range */
+        }
+    }
+
+    if (!vary_1)
+    {
+        const double p1 = get_fixed_pos_for_axis_char(d, ax1c);
+        if (check_fixed_axis_in_cache(g, ax1c, p1) != 0)
+        {
+            H5Sclose(fspace); H5Dclose(dset); H5Fclose(f);
+            return 41; /* out of cached ax1-range */
+        }
+    }
+
+    if (has_ax2 && !vary_2)
+    {
+        const double p2 = get_fixed_pos_for_axis_char(d, ax2c);
+        if (check_fixed_axis_in_cache(g, ax2c, p2) != 0)
+        {
+            H5Sclose(fspace); H5Dclose(dset); H5Fclose(f);
+            return 42; /* out of cached ax2-range */
+        }
     }
 
     /* Output axis sizes, order preserved. */
@@ -829,11 +894,17 @@ int field_diag_run_from_cache(const InputSimSpec *sim,
                                                 label, sizeof(label));
             if (rc != 0)
             {
-                if (!first_error)
-                    first_error = 200 + rc;
+                if (!first_error) first_error = 200 + rc;
+
+                fprintf(stderr,
+                    "field_diag: request %d comp=%s axes=\"%s\" has fixed coords out of cache; "
+                    "pos_t=%g pos_x=%g pos_y=%g pos_z=%g\n",
+                    i, comp, d->axes, d->pos_t, d->pos_x, d->pos_y, d->pos_z);
+
                 free(slice);
                 continue;
             }
+
 
             char out_path[1024];
             build_field_diag_path(out_path, sizeof(out_path),

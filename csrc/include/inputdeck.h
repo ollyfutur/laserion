@@ -172,11 +172,17 @@ extern "C"
 
     typedef struct
     {
+        bool enabled;    /* present [ionization_frac] table */
+    } IonFracSpec;
+
+    typedef struct
+    {
         RunSpec run;
         InputGridSpec grid;
         InputLaserDeck lasers;
         FieldCacheSpec field_cache;
         FieldDiagList field_diag;
+        IonFracSpec ionization_frac;
         // Future: diagnostics, outputs, species, etc.
     } InputSimSpec;
 
