@@ -325,6 +325,13 @@ static bool phasespace_is_2d(PhaseSpaceKind k)
            (k == PHASESPACE_PY_PZ) || (k == PHASESPACE_PZ_PY);
 }
 
+static bool grid_uses_axis(const InputGridSpec *g, Axis a)
+{
+    if (g->ax1 == a) return true;
+    if (g->has_ax2 && g->ax2 == a) return true;
+    return false;
+}
+
 
 /* -------------------------- field_cache defaults/parse -------------------------- */
 
@@ -585,7 +592,7 @@ static int parse_bins_table(toml_table_t *t, const char *key, int *nbins, double
     return 1;
 }
 
-static int parse_phase_space(toml_table_t *root, PhaseSpaceList *L)
+static int parse_phase_space(toml_table_t *root, const InputGridSpec *g, PhaseSpaceList *L)
 {
     toml_array_t *arr = toml_array_in(root, "phase_space");
     if (!arr) return 0; /* optional */
@@ -649,21 +656,32 @@ static int parse_phase_space(toml_table_t *root, PhaseSpaceList *L)
             (void)get_double(tr, "zmax", &d.zmax);
 
             /* sanity only if bounds are finite */
-            if (isfinite(d.xmin) && isfinite(d.xmax) && !(d.xmax > d.xmin))
+            if (grid_uses_axis(g, AXIS_X) &&
+                isfinite(d.xmin) && isfinite(d.xmax) &&
+                !(d.xmax > d.xmin))
             {
-                fprintf(stderr, "inputdeck: phase_space[%d] region.xmax must be > xmin\n", i);
+                fprintf(stderr,
+                        "inputdeck: phase_space[%d] region.xmax must be > xmin\n", i);
                 return 4;
             }
-            if (isfinite(d.ymin) && isfinite(d.ymax) && !(d.ymax > d.ymin))
+            if (grid_uses_axis(g, AXIS_Y) &&
+                isfinite(d.ymin) && isfinite(d.ymax) &&
+                !(d.ymax > d.ymin))
             {
-                fprintf(stderr, "inputdeck: phase_space[%d] region.ymax must be > ymin\n", i);
+                fprintf(stderr,
+                        "inputdeck: phase_space[%d] region.ymax must be > ymin\n", i);
                 return 5;
             }
-            if (isfinite(d.zmin) && isfinite(d.zmax) && !(d.zmax > d.zmin))
+
+            if (grid_uses_axis(g, AXIS_Z) &&
+                isfinite(d.zmin) && isfinite(d.zmax) &&
+                !(d.zmax > d.zmin))
             {
-                fprintf(stderr, "inputdeck: phase_space[%d] region.zmax must be > zmin\n", i);
+                fprintf(stderr,
+                        "inputdeck: phase_space[%d] region.zmax must be > zmin\n", i);
                 return 6;
             }
+
         }
 
         (void)get_double(td, "envelope_cut", &d.envelope_cut);
@@ -1324,7 +1342,7 @@ int inputdeck_read(const char *path, InputSimSpec *sim)
     if (rc != 0)
         goto done;
 
-    rc = parse_phase_space(root, &sim->phase_space);
+    rc = parse_phase_space(root, &sim->grid, &sim->phase_space);
     if (rc != 0)
         goto done;
 

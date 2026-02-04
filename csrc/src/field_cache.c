@@ -125,6 +125,10 @@ static void set_r_from_axes(const InputGridSpec *g,
     case AXIS_X: r_um[0] = a1; break;
     case AXIS_Y: r_um[1] = a1; break;
     case AXIS_Z: r_um[2] = a1; break;
+    case AXIS_INVALID:
+    default:
+        fprintf(stderr, "field_cache: invalid axis in grid spec\n");
+        break;
     }
 
     if (g->has_ax2)
@@ -134,6 +138,10 @@ static void set_r_from_axes(const InputGridSpec *g,
         case AXIS_X: r_um[0] = a2; break;
         case AXIS_Y: r_um[1] = a2; break;
         case AXIS_Z: r_um[2] = a2; break;
+        case AXIS_INVALID:
+        default:
+            fprintf(stderr, "field_cache: invalid axis in grid spec\n");
+            break;
         }
     }
 }
@@ -143,7 +151,8 @@ static void decompose_1d(size_t n, int rank, int nranks, size_t *i0, size_t *nlo
     size_t base = n / (size_t)nranks;
     size_t rem  = n % (size_t)nranks;
 
-    size_t start = (size_t)rank * base + (size_t)((rank < (int)rem) ? rank : rem);
+    size_t start = (size_t)rank * base + ((rank < (int)rem) ? (size_t)rank : rem);
+
     size_t count = base + (size_t)((rank < (int)rem) ? 1 : 0);
 
     *i0   = start;

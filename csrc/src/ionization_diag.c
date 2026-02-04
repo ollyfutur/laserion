@@ -24,18 +24,6 @@ static void join_path(char *out, size_t outsz, const char *a, const char *b)
     else            snprintf(out, outsz, "%s%s", a, b);
 }
 
-/* Nearest index on uniform grid, clamped to [0, n-1]. */
-static size_t nearest_index_uniform(double v, double vmin, double dv, size_t n)
-{
-    if (n == 0) return 0;
-    if (!(dv > 0.0)) return 0;
-    double x = (v - vmin) / dv;
-    long idx = (long)llround(x);
-    if (idx < 0) idx = 0;
-    if ((size_t)idx >= n) idx = (long)(n - 1);
-    return (size_t)idx;
-}
-
 static char grid_axis_to_char(Axis a)
 {
     switch (a)
@@ -47,17 +35,6 @@ static char grid_axis_to_char(Axis a)
     }
 }
 
-static int axis_char_to_grid_axis(char c, Axis *out)
-{
-    c = (char)tolower((unsigned char)c);
-    switch (c)
-    {
-    case 'x': *out = AXIS_X; return 0;
-    case 'y': *out = AXIS_Y; return 0;
-    case 'z': *out = AXIS_Z; return 0;
-    default:  return 1;
-    }
-}
 
 /* --------------------- infer cache dimension semantics -------------------- */
 /*
@@ -370,15 +347,29 @@ int iongrid_run_full_from_cache(const InputSimSpec *sim,
     bufEx = (float*)malloc(tile1 * tile2 * t_n * sizeof(float));
     bufEy = (float*)malloc(tile1 * tile2 * t_n * sizeof(float));
     bufEz = (float*)malloc(tile1 * tile2 * t_n * sizeof(float));
-    if (!bufEx || !bufEy || !bufEz) { rc = 20; goto fail; }
 
     /* Ionization scratch (per spatial point). */
-    double *Eabs = (double*)malloc(t_n * sizeof(double));
-    double *w    = (double*)malloc(nZ * t_n * sizeof(double));
-    double *S    = (double*)malloc(nZ * t_n * sizeof(double));
-    double *dP   = (double*)malloc(nZ * t_n * sizeof(double));
-    double *Plev = (double*)malloc(nZ * sizeof(double));
-    if (!Eabs || !w || !S || !dP || !Plev) { rc = 21; goto fail; }
+    double *Eabs = NULL;
+    double *w    = NULL;
+    double *S    = NULL;
+    double *dP   = NULL;
+    double *Plev = NULL;
+
+    /* allocate */
+    Eabs = (double*)malloc(t_n * sizeof(double));
+    w    = (double*)malloc((size_t)nZ * (size_t)t_n * sizeof(double));
+    S    = (double*)malloc((size_t)nZ * (size_t)t_n * sizeof(double));
+    dP   = (double*)malloc((size_t)nZ * (size_t)t_n * sizeof(double));
+    Plev = (double*)malloc((size_t)nZ * sizeof(double));
+
+    if (!bufEx || !bufEy || !bufEz) { rc = 20; goto fail; }
+
+    if (!Eabs || !w || !S || !dP || !Plev)
+    {
+        rc = 21;            /* pick your error code */
+        goto fail;
+    }
+
 
     printf("run: ionization_frac — computing full grid from cache (%s), gas=%s, Zmax=%d\n",
            cache_dir, sim->run.gas, Zmax);

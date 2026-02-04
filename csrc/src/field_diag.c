@@ -164,8 +164,6 @@ static void default_units_label_for_comp(const char *comp,
             snprintf(units, units_sz, "m_e c \\omega_p e^{-1}");
         else if (C0 == 'A')
             snprintf(units, units_sz, "m_e c^2 e^{-1}");
-        else
-            snprintf(units, units_sz, "");
     }
 
     if (label && label_sz)
@@ -566,8 +564,12 @@ static int slice_component_from_cache(const InputSimSpec *sim,
             continue;
         }
 
-        Axis asp;
-        (void)axis_char_to_grid_axis(ac, &asp);
+        Axis asp=AXIS_INVALID;
+        if (axis_char_to_grid_axis(ac, &asp) != 0 || asp == AXIS_INVALID)
+        {
+            fprintf(stderr, "field_diag: invalid axis character '%c' in axes string\n", ac);
+            return 1; /* or goto cleanup / continue depending on your function contract */
+        }
         if (asp == sim_ax1)
             vary_1 = 1;
         else if (has_ax2 && asp == sim_ax2)
