@@ -114,6 +114,22 @@ double ADK_scalar_rate(double E_abs, double ion_ene_eV, int Z)
     return A / pow(E, C) * exp(-B / E);
 }
 
+int ionization_species_supported(const char *species)
+{
+    return (find_species(species) != NULL) ? 1 : 0;
+}
+
+int ionization_species_Zmax(const char *species, int *Zmax_out)
+{
+    if (!Zmax_out)
+        return 1;
+    const IonSpeciesTable *tab = find_species(species);
+    if (!tab)
+        return 2;
+    *Zmax_out = tab->Zmax;
+    return 0;
+}
+
 /* -------------------- IonizationModel vtable --------------------------- */
 
 static double adk_rate_impl(const IonizationModel *base,

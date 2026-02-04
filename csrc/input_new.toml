@@ -4,6 +4,7 @@
 
 [run]
 working_dir = "."
+gas = "He"
 
 # =========================
 # 1) Field cache parameters

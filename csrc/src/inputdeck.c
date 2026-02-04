@@ -1,4 +1,5 @@
 #include "inputdeck.h"
+#include "ionization_model.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -301,6 +302,8 @@ static void run_defaults(RunSpec *r)
 {
     memset(r, 0, sizeof(*r));
     snprintf(r->working_dir, sizeof(r->working_dir), ".");
+    snprintf(r->gas, sizeof(r->gas), "H");
+    snprintf(r->ionization_model, sizeof(r->ionization_model), "adk");
 }
 
 static void field_cache_defaults(FieldCacheSpec *fc)
@@ -367,6 +370,43 @@ static int parse_run(toml_table_t *root, RunSpec *r)
         }
         snprintf(r->working_dir, sizeof(r->working_dir), "%s", wd);
         free(wd);
+    }
+    {
+        toml_datum_t d = toml_string_in(tr, "gas");
+        if (d.ok)
+        {
+            snprintf(r->gas, sizeof(r->gas), "%s", d.u.s);
+            free(d.u.s);
+        }
+    }
+
+    // ionization_model (NEW)
+    {
+        toml_datum_t d = toml_string_in(tr, "ionization_model");
+        if (d.ok)
+        {
+            snprintf(r->ionization_model, sizeof(r->ionization_model), "%s", d.u.s);
+            free(d.u.s);
+        }
+    }
+
+    // Validate ionization_model
+    if (strcmp(r->ionization_model, "adk") != 0)
+    {
+        fprintf(stderr,
+                "inputdeck: [run].ionization_model=\"%s\" is not supported (only \"adk\" is available).\n",
+                r->ionization_model);
+        return 1;
+    }
+
+    // Validate gas against ionization_model tables
+    if (!ionization_species_supported(r->gas))
+    {
+        fprintf(stderr,
+                "inputdeck: [run].gas=\"%s\" is not supported. "
+                "Supported gases are those listed in ionization_model.c tables.\n",
+                r->gas);
+        return 1;
     }
 
     return 0;

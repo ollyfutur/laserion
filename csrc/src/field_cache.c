@@ -1324,6 +1324,6 @@ int field_cache_run(const InputSimSpec *sim,
             status_rootf(comm, opt.root_rank, "field_cache: merged %s", "Az");
         }
     }
-    status_root(comm, opt.root_rank, "field_cache: done");
+    status_root(comm, opt.root_rank, "field_cache: done\n");
     return 0;
 }

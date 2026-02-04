@@ -117,7 +117,7 @@ debug: CFLAGS := $(CSTD) $(WARN) -g
 debug: clean all
 
 clean:
-	rm -rf $(BUILD_DIR) $(BIN_DIR)
+	rm -rf $(BUILD_DIR) $(BIN_DIR) MS/
 
 .PHONY: all clean debug
 

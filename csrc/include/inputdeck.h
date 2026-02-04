@@ -120,6 +120,8 @@ extern "C"
     {
         /* Base working directory for the run. "." means current directory. */
         char working_dir[256];
+        char gas[8];
+        char ionization_model[16];
     } RunSpec;
 
     /* -------------------------- Field cache control -------------------------- */

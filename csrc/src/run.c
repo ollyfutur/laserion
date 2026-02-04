@@ -12,6 +12,44 @@
 #include "field_cache.h"
 #include "field_diag.h"
 
+static void print_field_diag_requests(const FieldDiagList *L, MPI_Comm comm)
+{
+    int rank = 0;
+    MPI_Comm_rank(comm, &rank);
+    if (rank != 0)
+        return;
+
+    if (!L || L->n == 0)
+    {
+        printf("run: no field diagnostics requested\n");
+        return;
+    }
+
+    printf("run: %d field diagnostic(s) requested:\n", L->n);
+
+    for (int i = 0; i < L->n; ++i)
+    {
+        const FieldDiagSpec *d = &L->v[i];
+
+        printf("  field_diag[%d]:\n", i);
+        printf("    axes = \"%s\"\n", d->axes);
+
+        printf("    components =");
+        for (int c = 0; c < d->ncomp; ++c)
+            printf(" %s", d->comp[c]);
+        printf("\n");
+
+        printf("    fixed positions:");
+        printf(" t=%g", d->pos_t);
+        printf(" x=%g", d->pos_x);
+        printf(" y=%g", d->pos_y);
+        printf(" z=%g", d->pos_z);
+        printf("\n");
+    }
+
+    fflush(stdout);
+}
+
 static int ensure_dir_exists_one(const char *path, MPI_Comm comm)
 {
     int rank = 0;
@@ -124,6 +162,15 @@ int run_from_inputdeck(const char *toml_path, MPI_Comm comm)
 
     int rank = 0;
     MPI_Comm_rank(comm, &rank);
+
+    if (rank == 0)
+    {
+        printf("run: working_dir            = \"%s\"\n", sim.run.working_dir);
+        printf("run: gas species            = \"%s\"\n", sim.run.gas);
+        printf("run: ionization model       = \"%s\"\n", sim.run.ionization_model);
+        printf("\n");
+        fflush(stdout);
+    }
 
     /* ------------------------- apply [run] working_dir ------------------------- */
     if (strcmp(sim.run.working_dir, ".") != 0)
@@ -343,13 +390,16 @@ int run_from_inputdeck(const char *toml_path, MPI_Comm comm)
         {
             printf("run: field_diag — writing %d diagnostic(s) to diag/ (prefix diag/fields)\n",
                    sim.field_diag.n);
+            print_field_diag_requests(&sim.field_diag, comm);
             fflush(stdout);
         }
-
+        printf("\n");
         int fdr = field_diag_run_from_cache(&sim, "MS/field", &fdopt, comm);
         if (fdr != 0 && rc3 == 0)
             rc3 = 1200 + fdr;
     }
+
+    printf("run: done!\n");
 
     BuiltLasers_free(&bl);
     inputdeck_free(&sim);
