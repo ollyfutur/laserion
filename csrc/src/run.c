@@ -339,34 +339,69 @@ int run_from_inputdeck(const char *toml_path, MPI_Comm comm)
                 }
                 else
                 {
+                    int ok = 0;
+                    char why[512] = "";
+
                     if (rank == opt.root_rank)
+                        ok = field_cache_is_compatible(cache_dir, &sim,
+                                                    /*require_A=*/opt.compute_A,
+                                                    why, sizeof(why));
+
+                    MPI_Bcast(&ok, 1, MPI_INT, opt.root_rank, comm);
+
+                    if (ok != 1)
                     {
-                        printf("run: field_cache load successful (cache found in %s/)\n",
-                               cache_dir);
-                        fflush(stdout);
+                        if (rank == opt.root_rank)
+                            fprintf(stderr,
+                                    "run: field_cache mode=load but cache incompatible: %s\n",
+                                    why);
+                        rc_main = 1003;
                     }
-                    rc_main = 0;
+                    else
+                    {
+                        if (rank == opt.root_rank)
+                            printf("run: field_cache load successful (cache compatible in %s/)\n",
+                                cache_dir);
+                        rc_main = 0;
+                    }
                 }
                 break;
 
             case FC_MODE_AUTO:
                 if (have_cache)
                 {
+                    int ok = 0;
+                    char why[512] = "";
+
                     if (rank == opt.root_rank)
+                        ok = field_cache_is_compatible(cache_dir, &sim,
+                                                    /*require_A=*/opt.compute_A,
+                                                    why, sizeof(why));
+
+                    MPI_Bcast(&ok, 1, MPI_INT, opt.root_rank, comm);
+
+                    if (ok == 1)
                     {
-                        printf("run: field_cache auto mode — using existing cache in %s/\n",
-                               cache_dir);
-                        fflush(stdout);
+                        if (rank == opt.root_rank)
+                            printf("run: field_cache auto mode — using existing compatible cache in %s/\n",
+                                cache_dir);
+                        rc_main = 0;
                     }
-                    rc_main = 0;
+                    else
+                    {
+                        if (rank == opt.root_rank)
+                            printf("run: field_cache auto mode — cache incompatible: %s\n"
+                                "run: recomputing cache in %s/\n",
+                                why, cache_dir);
+
+                        rc_main = field_cache_run(&sim, pulse, cache_dir, &opt, comm);
+                    }
                 }
                 else
                 {
                     if (rank == opt.root_rank)
-                    {
                         printf("run: field_cache auto mode — no cache found, computing cache\n");
-                        fflush(stdout);
-                    }
+
                     rc_main = field_cache_run(&sim, pulse, cache_dir, &opt, comm);
                 }
                 break;
@@ -374,8 +409,7 @@ int run_from_inputdeck(const char *toml_path, MPI_Comm comm)
             case FC_MODE_COMPUTE:
                 if (rank == opt.root_rank)
                 {
-                    printf("run: field_cache compute mode — recomputing cache in %s/\n",
-                           cache_dir);
+                    printf("run: field_cache compute mode — recomputing cache in %s/\n", cache_dir);
                     fflush(stdout);
                 }
                 rc_main = field_cache_run(&sim, pulse, cache_dir, &opt, comm);

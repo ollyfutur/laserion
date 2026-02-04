@@ -36,6 +36,12 @@ extern "C"
                         const FieldCacheOptions *opt,
                         MPI_Comm comm);
 
+    int field_cache_is_compatible(const char *cache_dir,
+            const InputSimSpec *sim,
+            int require_A,
+            char *why, size_t why_sz);
+
+
 #ifdef __cplusplus
 }
 #endif
