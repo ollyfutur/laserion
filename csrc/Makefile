@@ -7,8 +7,8 @@ BIN_DIR   := bin
 
 # ================= Compiler ==============================================
 
-MPICC := /opt/openmpi/gcc-14.2.0/bin/mpicc
-##MPICC := /opt/homebrew/bin/mpicc
+##MPICC := /opt/openmpi/gcc-14.2.0/bin/mpicc
+MPICC := /opt/homebrew/bin/mpicc
 CC    := $(MPICC)
 
 
@@ -69,15 +69,15 @@ LIB_SRCS := \
 	$(SRC_DIR)/laser.c \
 	$(SRC_DIR)/diag_h5.c \
 	$(SRC_DIR)/diag_grid.c \
-      $(SRC_DIR)/field_diag.c \
-      $(SRC_DIR)/ionization_diag.c \
+	$(SRC_DIR)/field_diag.c \
+	$(SRC_DIR)/ionization_diag.c \
 	$(SRC_DIR)/mdf.c \
-	$(SRC_DIR)/mdf_grid.c \
-      $(SRC_DIR)/mdf_particles.c \
-      $(SRC_DIR)/inputdeck.c \
-      $(SRC_DIR)/field_cache.c \
-      $(SRC_DIR)/run.c \
-      $(SRC_DIR)/laser_build.c 
+	$(SRC_DIR)/mdf_diag.c \
+	$(SRC_DIR)/mdf_particles.c \
+	$(SRC_DIR)/inputdeck.c \
+	$(SRC_DIR)/field_cache.c \
+	$(SRC_DIR)/run.c \
+	$(SRC_DIR)/laser_build.c 
 
 LIB_OBJS := $(LIB_SRCS:%.c=$(BUILD_DIR)/%.o)
 

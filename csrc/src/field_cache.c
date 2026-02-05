@@ -122,9 +122,15 @@ static void set_r_from_axes(const InputGridSpec *g,
 
     switch (g->ax1)
     {
-    case AXIS_X: r_um[0] = a1; break;
-    case AXIS_Y: r_um[1] = a1; break;
-    case AXIS_Z: r_um[2] = a1; break;
+    case AXIS_X:
+        r_um[0] = a1;
+        break;
+    case AXIS_Y:
+        r_um[1] = a1;
+        break;
+    case AXIS_Z:
+        r_um[2] = a1;
+        break;
     case AXIS_INVALID:
     default:
         fprintf(stderr, "field_cache: invalid axis in grid spec\n");
@@ -135,9 +141,15 @@ static void set_r_from_axes(const InputGridSpec *g,
     {
         switch (g->ax2)
         {
-        case AXIS_X: r_um[0] = a2; break;
-        case AXIS_Y: r_um[1] = a2; break;
-        case AXIS_Z: r_um[2] = a2; break;
+        case AXIS_X:
+            r_um[0] = a2;
+            break;
+        case AXIS_Y:
+            r_um[1] = a2;
+            break;
+        case AXIS_Z:
+            r_um[2] = a2;
+            break;
         case AXIS_INVALID:
         default:
             fprintf(stderr, "field_cache: invalid axis in grid spec\n");
@@ -149,13 +161,13 @@ static void set_r_from_axes(const InputGridSpec *g,
 static void decompose_1d(size_t n, int rank, int nranks, size_t *i0, size_t *nloc)
 {
     size_t base = n / (size_t)nranks;
-    size_t rem  = n % (size_t)nranks;
+    size_t rem = n % (size_t)nranks;
 
     size_t start = (size_t)rank * base + ((rank < (int)rem) ? (size_t)rank : rem);
 
     size_t count = base + (size_t)((rank < (int)rem) ? 1 : 0);
 
-    *i0   = start;
+    *i0 = start;
     *nloc = count;
 }
 
@@ -175,7 +187,8 @@ static hid_t h5_open_ro_or_fail(const char *path)
 
 static int h5_write_attr_string(hid_t obj, const char *name, const char *value)
 {
-    if (!value) value = "";
+    if (!value)
+        value = "";
 
     hid_t atype = H5Tcopy(H5T_C_S1);
     if (atype < 0)
@@ -355,19 +368,33 @@ typedef struct
     size_t cap;
 } StrBuf;
 
-static void sb_init(StrBuf *s) { s->buf = NULL; s->len = 0; s->cap = 0; }
-static void sb_free(StrBuf *s) { free(s->buf); s->buf = NULL; s->len = 0; s->cap = 0; }
+static void sb_init(StrBuf *s)
+{
+    s->buf = NULL;
+    s->len = 0;
+    s->cap = 0;
+}
+static void sb_free(StrBuf *s)
+{
+    free(s->buf);
+    s->buf = NULL;
+    s->len = 0;
+    s->cap = 0;
+}
 
 static int sb_ensure(StrBuf *s, size_t need_extra)
 {
     size_t need = s->len + need_extra + 1;
-    if (need <= s->cap) return 0;
+    if (need <= s->cap)
+        return 0;
 
     size_t newcap = (s->cap == 0) ? 1024 : s->cap;
-    while (newcap < need) newcap *= 2;
+    while (newcap < need)
+        newcap *= 2;
 
     char *p = (char *)realloc(s->buf, newcap);
-    if (!p) return 1;
+    if (!p)
+        return 1;
 
     s->buf = p;
     s->cap = newcap;
@@ -376,9 +403,11 @@ static int sb_ensure(StrBuf *s, size_t need_extra)
 
 static int sb_append(StrBuf *s, const char *txt)
 {
-    if (!txt) txt = "";
+    if (!txt)
+        txt = "";
     size_t n = strlen(txt);
-    if (sb_ensure(s, n) != 0) return 1;
+    if (sb_ensure(s, n) != 0)
+        return 1;
     memcpy(s->buf + s->len, txt, n);
     s->len += n;
     s->buf[s->len] = '\0';
@@ -430,87 +459,132 @@ static uint64_t fnv1a64(const void *data, size_t n)
 
 static char *field_cache_build_config_string(const InputSimSpec *sim, int compute_A)
 {
-    if (!sim) return NULL;
+    if (!sim)
+        return NULL;
 
     const InputGridSpec *g = &sim->grid;
 
     StrBuf s;
     sb_init(&s);
 
-    if (sb_append(&s, "FIELD_CACHE_CONFIG v1\n") != 0) goto oom;
-    if (sb_appendf(&s, "compute_A=%d\n", compute_A ? 1 : 0) != 0) goto oom;
+    if (sb_append(&s, "FIELD_CACHE_CONFIG v1\n") != 0)
+        goto oom;
+    if (sb_appendf(&s, "compute_A=%d\n", compute_A ? 1 : 0) != 0)
+        goto oom;
 
-    if (sb_append(&s, "[grid]\n") != 0) goto oom;
-    if (sb_appendf(&s, "t_min=%.17g\n", g->t_min) != 0) goto oom;
-    if (sb_appendf(&s, "t_max=%.17g\n", g->t_max) != 0) goto oom;
-    if (sb_appendf(&s, "dt=%.17g\n", g->dt) != 0) goto oom;
-    if (sb_appendf(&s, "t_n=%d\n", g->t_n) != 0) goto oom;
+    if (sb_append(&s, "[grid]\n") != 0)
+        goto oom;
+    if (sb_appendf(&s, "t_min=%.17g\n", g->t_min) != 0)
+        goto oom;
+    if (sb_appendf(&s, "t_max=%.17g\n", g->t_max) != 0)
+        goto oom;
+    if (sb_appendf(&s, "dt=%.17g\n", g->dt) != 0)
+        goto oom;
+    if (sb_appendf(&s, "t_n=%d\n", g->t_n) != 0)
+        goto oom;
 
-    if (sb_appendf(&s, "ax1=%s\n", axis_name(g->ax1)) != 0) goto oom;
-    if (sb_appendf(&s, "has_ax2=%d\n", g->has_ax2 ? 1 : 0) != 0) goto oom;
+    if (sb_appendf(&s, "ax1=%s\n", axis_name(g->ax1)) != 0)
+        goto oom;
+    if (sb_appendf(&s, "has_ax2=%d\n", g->has_ax2 ? 1 : 0) != 0)
+        goto oom;
     if (g->has_ax2)
-        if (sb_appendf(&s, "ax2=%s\n", axis_name(g->ax2)) != 0) goto oom;
+        if (sb_appendf(&s, "ax2=%s\n", axis_name(g->ax2)) != 0)
+            goto oom;
 
-    if (sb_appendf(&s, "fixed_x=%.17g\n", g->fixed_x) != 0) goto oom;
-    if (sb_appendf(&s, "fixed_y=%.17g\n", g->fixed_y) != 0) goto oom;
-    if (sb_appendf(&s, "fixed_z=%.17g\n", g->fixed_z) != 0) goto oom;
+    if (sb_appendf(&s, "fixed_x=%.17g\n", g->fixed_x) != 0)
+        goto oom;
+    if (sb_appendf(&s, "fixed_y=%.17g\n", g->fixed_y) != 0)
+        goto oom;
+    if (sb_appendf(&s, "fixed_z=%.17g\n", g->fixed_z) != 0)
+        goto oom;
 
-    if (sb_appendf(&s, "ax1_min=%.17g\n", g->ax1_min) != 0) goto oom;
-    if (sb_appendf(&s, "ax1_max=%.17g\n", g->ax1_max) != 0) goto oom;
-    if (sb_appendf(&s, "dx1=%.17g\n", g->dx1) != 0) goto oom;
-    if (sb_appendf(&s, "ax1_n=%d\n", g->ax1_n) != 0) goto oom;
+    if (sb_appendf(&s, "ax1_min=%.17g\n", g->ax1_min) != 0)
+        goto oom;
+    if (sb_appendf(&s, "ax1_max=%.17g\n", g->ax1_max) != 0)
+        goto oom;
+    if (sb_appendf(&s, "dx1=%.17g\n", g->dx1) != 0)
+        goto oom;
+    if (sb_appendf(&s, "ax1_n=%d\n", g->ax1_n) != 0)
+        goto oom;
 
     if (g->has_ax2)
     {
-        if (sb_appendf(&s, "ax2_min=%.17g\n", g->ax2_min) != 0) goto oom;
-        if (sb_appendf(&s, "ax2_max=%.17g\n", g->ax2_max) != 0) goto oom;
-        if (sb_appendf(&s, "dx2=%.17g\n", g->dx2) != 0) goto oom;
-        if (sb_appendf(&s, "ax2_n=%d\n", g->ax2_n) != 0) goto oom;
+        if (sb_appendf(&s, "ax2_min=%.17g\n", g->ax2_min) != 0)
+            goto oom;
+        if (sb_appendf(&s, "ax2_max=%.17g\n", g->ax2_max) != 0)
+            goto oom;
+        if (sb_appendf(&s, "dx2=%.17g\n", g->dx2) != 0)
+            goto oom;
+        if (sb_appendf(&s, "ax2_n=%d\n", g->ax2_n) != 0)
+            goto oom;
     }
 
-    if (sb_append(&s, "[lasers]\n") != 0) goto oom;
-    if (sb_appendf(&s, "count=%zu\n", sim->lasers.count) != 0) goto oom;
+    if (sb_append(&s, "[lasers]\n") != 0)
+        goto oom;
+    if (sb_appendf(&s, "count=%zu\n", sim->lasers.count) != 0)
+        goto oom;
 
     for (size_t i = 0; i < sim->lasers.count; ++i)
     {
         const InputLaserSpec *L = &sim->lasers.items[i];
 
-        if (sb_appendf(&s, "laser[%zu].type=%d\n", i, (int)L->type) != 0) goto oom;
+        if (sb_appendf(&s, "laser[%zu].type=%d\n", i, (int)L->type) != 0)
+            goto oom;
 
-        if (sb_appendf(&s, "laser[%zu].E0=%.17g\n", i, L->E0) != 0) goto oom;
-        if (sb_appendf(&s, "laser[%zu].wavelength=%.17g\n", i, L->wavelength) != 0) goto oom;
-        if (sb_appendf(&s, "laser[%zu].phase0=%.17g\n", i, L->phase0) != 0) goto oom;
+        if (sb_appendf(&s, "laser[%zu].E0=%.17g\n", i, L->E0) != 0)
+            goto oom;
+        if (sb_appendf(&s, "laser[%zu].wavelength=%.17g\n", i, L->wavelength) != 0)
+            goto oom;
+        if (sb_appendf(&s, "laser[%zu].phase0=%.17g\n", i, L->phase0) != 0)
+            goto oom;
 
         if (sb_appendf(&s, "laser[%zu].k_vec=%.17g,%.17g,%.17g\n",
-                       i, L->k_vec[0], L->k_vec[1], L->k_vec[2]) != 0) goto oom;
+                       i, L->k_vec[0], L->k_vec[1], L->k_vec[2]) != 0)
+            goto oom;
         if (sb_appendf(&s, "laser[%zu].r_start=%.17g,%.17g,%.17g\n",
-                       i, L->r_start[0], L->r_start[1], L->r_start[2]) != 0) goto oom;
+                       i, L->r_start[0], L->r_start[1], L->r_start[2]) != 0)
+            goto oom;
 
         if (sb_appendf(&s, "laser[%zu].use_retarded_time=%d\n",
-                       i, L->use_retarded_time ? 1 : 0) != 0) goto oom;
+                       i, L->use_retarded_time ? 1 : 0) != 0)
+            goto oom;
 
-        if (sb_appendf(&s, "laser[%zu].temporal_type=%d\n", i, (int)L->temporal_type) != 0) goto oom;
-        if (sb_appendf(&s, "laser[%zu].tau=%.17g\n", i, L->tau) != 0) goto oom;
+        if (sb_appendf(&s, "laser[%zu].temporal_type=%d\n", i, (int)L->temporal_type) != 0)
+            goto oom;
+        if (sb_appendf(&s, "laser[%zu].tau=%.17g\n", i, L->tau) != 0)
+            goto oom;
 
-        if (sb_appendf(&s, "laser[%zu].transverse_type=%d\n", i, (int)L->transverse_type) != 0) goto oom;
-        if (sb_appendf(&s, "laser[%zu].w0=%.17g\n", i, L->w0) != 0) goto oom;
-        if (sb_appendf(&s, "laser[%zu].zf=%.17g\n", i, L->zf) != 0) goto oom;
+        if (sb_appendf(&s, "laser[%zu].transverse_type=%d\n", i, (int)L->transverse_type) != 0)
+            goto oom;
+        if (sb_appendf(&s, "laser[%zu].w0=%.17g\n", i, L->w0) != 0)
+            goto oom;
+        if (sb_appendf(&s, "laser[%zu].zf=%.17g\n", i, L->zf) != 0)
+            goto oom;
 
-        if (sb_appendf(&s, "laser[%zu].has_hermite=%d\n", i, L->has_hermite ? 1 : 0) != 0) goto oom;
+        if (sb_appendf(&s, "laser[%zu].has_hermite=%d\n", i, L->has_hermite ? 1 : 0) != 0)
+            goto oom;
         if (L->has_hermite)
-            if (sb_appendf(&s, "laser[%zu].herm_lm=%d,%d\n", i, L->herm_l, L->herm_m) != 0) goto oom;
+            if (sb_appendf(&s, "laser[%zu].herm_lm=%d,%d\n", i, L->herm_l, L->herm_m) != 0)
+                goto oom;
 
-        if (sb_appendf(&s, "laser[%zu].polarization=%d\n", i, (int)L->polarization) != 0) goto oom;
-        if (sb_appendf(&s, "laser[%zu].angle=%.17g\n", i, L->angle) != 0) goto oom;
+        if (sb_appendf(&s, "laser[%zu].polarization=%d\n", i, (int)L->polarization) != 0)
+            goto oom;
+        if (sb_appendf(&s, "laser[%zu].angle=%.17g\n", i, L->angle) != 0)
+            goto oom;
 
-        if (sb_appendf(&s, "laser[%zu].sense=%d\n", i, (int)L->sense) != 0) goto oom;
+        if (sb_appendf(&s, "laser[%zu].sense=%d\n", i, (int)L->sense) != 0)
+            goto oom;
 
-        if (sb_appendf(&s, "laser[%zu].has_jones=%d\n", i, L->has_jones ? 1 : 0) != 0) goto oom;
+        if (sb_appendf(&s, "laser[%zu].has_jones=%d\n", i, L->has_jones ? 1 : 0) != 0)
+            goto oom;
         if (L->has_jones)
         {
-            if (sb_appendf(&s, "laser[%zu].p1=%.17g\n", i, L->p1) != 0) goto oom;
-            if (sb_appendf(&s, "laser[%zu].p2=%.17g\n", i, L->p2) != 0) goto oom;
-            if (sb_appendf(&s, "laser[%zu].delta=%.17g\n", i, L->delta) != 0) goto oom;
+            if (sb_appendf(&s, "laser[%zu].p1=%.17g\n", i, L->p1) != 0)
+                goto oom;
+            if (sb_appendf(&s, "laser[%zu].p2=%.17g\n", i, L->p2) != 0)
+                goto oom;
+            if (sb_appendf(&s, "laser[%zu].delta=%.17g\n", i, L->delta) != 0)
+                goto oom;
         }
     }
 
@@ -550,10 +624,14 @@ static const char *axis_name_osiris(Axis a)
 {
     switch (a)
     {
-    case AXIS_X: return "x";
-    case AXIS_Y: return "y";
-    case AXIS_Z: return "z";
-    default:     return "?";
+    case AXIS_X:
+        return "x";
+    case AXIS_Y:
+        return "y";
+    case AXIS_Z:
+        return "z";
+    default:
+        return "?";
     }
 }
 
@@ -561,10 +639,14 @@ static const char *axis_long_name_osiris(Axis a)
 {
     switch (a)
     {
-    case AXIS_X: return "x";
-    case AXIS_Y: return "y";
-    case AXIS_Z: return "z";
-    default:     return "?";
+    case AXIS_X:
+        return "x";
+    case AXIS_Y:
+        return "y";
+    case AXIS_Z:
+        return "z";
+    default:
+        return "?";
     }
 }
 
@@ -765,8 +847,10 @@ static int create_single_dataset_file(hid_t *out_f, hid_t *out_dset,
     }
 
     /* cache provenance (NEW) */
-    if (cache_config) h5_write_attr_string(f, "CACHE_CONFIG", cache_config);
-    if (cache_key)    h5_write_attr_string(f, "CACHE_KEY", cache_key);
+    if (cache_config)
+        h5_write_attr_string(f, "CACHE_CONFIG", cache_config);
+    if (cache_key)
+        h5_write_attr_string(f, "CACHE_KEY", cache_key);
     h5_write_attr_int(f, "CACHE_HAS_A", cache_has_A ? 1 : 0);
 
     /* single dataset */
@@ -780,7 +864,7 @@ static int create_single_dataset_file(hid_t *out_f, hid_t *out_dset,
             cdims[0] = dims[2];
             cdims[1] = dims[0];
             cdims[2] = dims[1];
-            use_dims  = cdims;
+            use_dims = cdims;
         }
     }
     else if (nd == 2)
@@ -789,7 +873,7 @@ static int create_single_dataset_file(hid_t *out_f, hid_t *out_dset,
         {
             cdims[0] = dims[1];
             cdims[1] = dims[0];
-            use_dims  = cdims;
+            use_dims = cdims;
         }
     }
 
@@ -813,7 +897,7 @@ static int create_single_dataset_file(hid_t *out_f, hid_t *out_dset,
         return 3;
     }
 
-    *out_f    = f;
+    *out_f = f;
     *out_dset = dset;
     return 0;
 }
@@ -887,44 +971,74 @@ static int write_rank_files_2d(const InputGridSpec *g,
             return 6;
     }
 
-    double *bx  = (double *)calloc(a1_nloc, sizeof(double));
-    double *by  = (double *)calloc(a1_nloc, sizeof(double));
-    double *bz  = (double *)calloc(a1_nloc, sizeof(double));
+    double *bx = (double *)calloc(a1_nloc, sizeof(double));
+    double *by = (double *)calloc(a1_nloc, sizeof(double));
+    double *bz = (double *)calloc(a1_nloc, sizeof(double));
     double *bax = compute_A ? (double *)calloc(a1_nloc, sizeof(double)) : NULL;
     double *bay = compute_A ? (double *)calloc(a1_nloc, sizeof(double)) : NULL;
     double *baz = compute_A ? (double *)calloc(a1_nloc, sizeof(double)) : NULL;
+    double *bx_prev = compute_A ? (double *)calloc(a1_nloc, sizeof(double)) : NULL;
+    double *by_prev = compute_A ? (double *)calloc(a1_nloc, sizeof(double)) : NULL;
+    double *bz_prev = compute_A ? (double *)calloc(a1_nloc, sizeof(double)) : NULL;
 
-    if (!bx || !by || !bz || (compute_A && (!bax || !bay || !baz)))
+    if (!bx || !by || !bz || (compute_A && (!bax || !bay || !baz || !bx_prev || !by_prev || !bz_prev)))
         return 7;
 
     for (int it = 0; it < g->t_n; ++it)
     {
-        double t = g->t_min + (double)it * g->dt;
+        const double t = g->t_min + (double)it * g->dt;
 
+        /* compute E(t, x) into bx/by/bz */
         for (size_t ia = 0; ia < a1_nloc; ++ia)
         {
-            size_t ig = a1_i0 + ia;
-            double a1 = g->ax1_min + (double)ig * g->dx1;
+            const size_t ig = a1_i0 + ia;
+            const double a1 = g->ax1_min + (double)ig * g->dx1;
 
             double r[3];
             set_r_from_axes(g, a1, 0.0, r);
 
             double E[3];
             LaserPulse_E(pulse, t, r, E);
+
             bx[ia] = E[0];
             by[ia] = E[1];
             bz[ia] = E[2];
+        }
 
-            if (compute_A)
+        /* integrate A forward in time (trapezoid) */
+        if (compute_A)
+        {
+            if (it == 0)
             {
-                double A[3];
-                LaserPulse_A(pulse, t, r, A);
-                bax[ia] = A[0];
-                bay[ia] = A[1];
-                baz[ia] = A[2];
+                /* A(t0) = 0 by convention */
+                for (size_t ia = 0; ia < a1_nloc; ++ia)
+                {
+                    bax[ia] = 0.0;
+                    bay[ia] = 0.0;
+                    baz[ia] = 0.0;
+
+                    bx_prev[ia] = bx[ia];
+                    by_prev[ia] = by[ia];
+                    bz_prev[ia] = bz[ia];
+                }
+            }
+            else
+            {
+                const double dt = g->dt;
+                for (size_t ia = 0; ia < a1_nloc; ++ia)
+                {
+                    bax[ia] -= 0.5 * (bx_prev[ia] + bx[ia]) * dt;
+                    bay[ia] -= 0.5 * (by_prev[ia] + by[ia]) * dt;
+                    baz[ia] -= 0.5 * (bz_prev[ia] + bz[ia]) * dt;
+
+                    bx_prev[ia] = bx[ia];
+                    by_prev[ia] = by[ia];
+                    bz_prev[ia] = bz[ia];
+                }
             }
         }
 
+        /* write slabs at this time */
         hsize_t start[2] = {(hsize_t)it, 0};
         hsize_t count[2] = {1, (hsize_t)a1_nloc};
         hid_t mspace = H5Screate_simple(2, count, NULL);
@@ -965,18 +1079,30 @@ static int write_rank_files_2d(const InputGridSpec *g,
         H5Sclose(mspace);
     }
 
-    free(bx); free(by); free(bz);
-    free(bax); free(bay); free(baz);
-
-    H5Dclose(dEx); H5Fclose(fEx);
-    H5Dclose(dEy); H5Fclose(fEy);
-    H5Dclose(dEz); H5Fclose(fEz);
+    free(bx);
+    free(by);
+    free(bz);
+    free(bax);
+    free(bay);
+    free(baz);
+    free(bx_prev);
+    free(by_prev);
+    free(bz_prev);
+    H5Dclose(dEx);
+    H5Fclose(fEx);
+    H5Dclose(dEy);
+    H5Fclose(fEy);
+    H5Dclose(dEz);
+    H5Fclose(fEz);
 
     if (compute_A)
     {
-        H5Dclose(dAx); H5Fclose(fAx);
-        H5Dclose(dAy); H5Fclose(fAy);
-        H5Dclose(dAz); H5Fclose(fAz);
+        H5Dclose(dAx);
+        H5Fclose(fAx);
+        H5Dclose(dAy);
+        H5Fclose(fAy);
+        H5Dclose(dAz);
+        H5Fclose(fAz);
     }
 
     return 0;
@@ -1039,8 +1165,11 @@ static int write_rank_files_3d(const InputGridSpec *g,
     double *Ax = compute_A ? (double *)calloc(plane, sizeof(double)) : NULL;
     double *Ay = compute_A ? (double *)calloc(plane, sizeof(double)) : NULL;
     double *Az = compute_A ? (double *)calloc(plane, sizeof(double)) : NULL;
+    double *Ex_prev = compute_A ? (double *)calloc(plane, sizeof(double)) : NULL;
+    double *Ey_prev = compute_A ? (double *)calloc(plane, sizeof(double)) : NULL;
+    double *Ez_prev = compute_A ? (double *)calloc(plane, sizeof(double)) : NULL;
 
-    if (!Ex || !Ey || !Ez || (compute_A && (!Ax || !Ay || !Az)))
+    if (!Ex || !Ey || !Ez || (compute_A && (!Ax || !Ay || !Az || !Ex_prev || !Ey_prev || !Ez_prev)))
         return 7;
 
     for (int it = 0; it < g->t_n; ++it)
@@ -1066,14 +1195,35 @@ static int write_rank_files_3d(const InputGridSpec *g,
                 Ex[idx] = E[0];
                 Ey[idx] = E[1];
                 Ez[idx] = E[2];
+            }
+        }
 
-                if (compute_A)
+        /* integrate A forward in time (trapezoid), once the full plane Ex/Ey/Ez is ready */
+        if (compute_A)
+        {
+            if (it == 0)
+            {
+                /* A(t0)=0 and prev = E(t0) */
+                for (size_t k = 0; k < plane; ++k)
                 {
-                    double A[3];
-                    LaserPulse_A(pulse, t, r, A);
-                    Ax[idx] = A[0];
-                    Ay[idx] = A[1];
-                    Az[idx] = A[2];
+                    Ax[k] = Ay[k] = Az[k] = 0.0;
+                    Ex_prev[k] = Ex[k];
+                    Ey_prev[k] = Ey[k];
+                    Ez_prev[k] = Ez[k];
+                }
+            }
+            else
+            {
+                const double dt = g->dt;
+                for (size_t k = 0; k < plane; ++k)
+                {
+                    Ax[k] -= 0.5 * (Ex_prev[k] + Ex[k]) * dt;
+                    Ay[k] -= 0.5 * (Ey_prev[k] + Ey[k]) * dt;
+                    Az[k] -= 0.5 * (Ez_prev[k] + Ez[k]) * dt;
+
+                    Ex_prev[k] = Ex[k];
+                    Ey_prev[k] = Ey[k];
+                    Ez_prev[k] = Ez[k];
                 }
             }
         }
@@ -1118,18 +1268,31 @@ static int write_rank_files_3d(const InputGridSpec *g,
         H5Sclose(mspace);
     }
 
-    free(Ex); free(Ey); free(Ez);
-    free(Ax); free(Ay); free(Az);
+    free(Ex);
+    free(Ey);
+    free(Ez);
+    free(Ax);
+    free(Ay);
+    free(Az);
+    free(Ex_prev);
+    free(Ey_prev);
+    free(Ez_prev);
 
-    H5Dclose(dEx); H5Fclose(fEx);
-    H5Dclose(dEy); H5Fclose(fEy);
-    H5Dclose(dEz); H5Fclose(fEz);
+    H5Dclose(dEx);
+    H5Fclose(fEx);
+    H5Dclose(dEy);
+    H5Fclose(fEy);
+    H5Dclose(dEz);
+    H5Fclose(fEz);
 
     if (compute_A)
     {
-        H5Dclose(dAx); H5Fclose(fAx);
-        H5Dclose(dAy); H5Fclose(fAy);
-        H5Dclose(dAz); H5Fclose(fAz);
+        H5Dclose(dAx);
+        H5Fclose(fAx);
+        H5Dclose(dAy);
+        H5Fclose(fAy);
+        H5Dclose(dAz);
+        H5Fclose(fAz);
     }
 
     return 0;
@@ -1177,9 +1340,17 @@ static int merge_component_2d(const InputGridSpec *g, const char *prefix,
 
         int i0 = 0, nloc = 0;
         hid_t a = H5Aopen(fin, "slab_i0", H5P_DEFAULT);
-        if (a >= 0) { H5Aread(a, H5T_NATIVE_INT, &i0); H5Aclose(a); }
+        if (a >= 0)
+        {
+            H5Aread(a, H5T_NATIVE_INT, &i0);
+            H5Aclose(a);
+        }
         a = H5Aopen(fin, "slab_nloc", H5P_DEFAULT);
-        if (a >= 0) { H5Aread(a, H5T_NATIVE_INT, &nloc); H5Aclose(a); }
+        if (a >= 0)
+        {
+            H5Aread(a, H5T_NATIVE_INT, &nloc);
+            H5Aclose(a);
+        }
 
         if (nloc <= 0)
         {
@@ -1276,9 +1447,17 @@ static int merge_component_3d(const InputGridSpec *g, const char *prefix,
 
         int i0 = 0, nloc = 0;
         hid_t a = H5Aopen(fin, "slab_i0", H5P_DEFAULT);
-        if (a >= 0) { H5Aread(a, H5T_NATIVE_INT, &i0); H5Aclose(a); }
+        if (a >= 0)
+        {
+            H5Aread(a, H5T_NATIVE_INT, &i0);
+            H5Aclose(a);
+        }
         a = H5Aopen(fin, "slab_nloc", H5P_DEFAULT);
-        if (a >= 0) { H5Aread(a, H5T_NATIVE_INT, &nloc); H5Aclose(a); }
+        if (a >= 0)
+        {
+            H5Aread(a, H5T_NATIVE_INT, &nloc);
+            H5Aclose(a);
+        }
 
         if (nloc <= 0)
         {
@@ -1340,10 +1519,12 @@ static int merge_component_3d(const InputGridSpec *g, const char *prefix,
 
 static int h5_read_attr_int(hid_t obj, const char *name, int *out)
 {
-    if (!out) return -1;
+    if (!out)
+        return -1;
 
     hid_t a = H5Aopen(obj, name, H5P_DEFAULT);
-    if (a < 0) return 0;
+    if (a < 0)
+        return 0;
 
     herr_t st = H5Aread(a, H5T_NATIVE_INT, out);
     H5Aclose(a);
@@ -1354,20 +1535,36 @@ static int h5_read_attr_int(hid_t obj, const char *name, int *out)
 /* Read fixed-length string attribute as allocated C string. Works with your h5_write_attr_string(). */
 static int h5_read_attr_string_alloc(hid_t obj, const char *name, char **out_s)
 {
-    if (!out_s) return -1;
+    if (!out_s)
+        return -1;
     *out_s = NULL;
 
     hid_t a = H5Aopen(obj, name, H5P_DEFAULT);
-    if (a < 0) return 0;
+    if (a < 0)
+        return 0;
 
     hid_t t = H5Aget_type(a);
-    if (t < 0) { H5Aclose(a); return -2; }
+    if (t < 0)
+    {
+        H5Aclose(a);
+        return -2;
+    }
 
     size_t sz = (size_t)H5Tget_size(t);
-    if (sz == 0) { H5Tclose(t); H5Aclose(a); return -3; }
+    if (sz == 0)
+    {
+        H5Tclose(t);
+        H5Aclose(a);
+        return -3;
+    }
 
     char *buf = (char *)malloc(sz + 1);
-    if (!buf) { H5Tclose(t); H5Aclose(a); return -4; }
+    if (!buf)
+    {
+        H5Tclose(t);
+        H5Aclose(a);
+        return -4;
+    }
 
     herr_t st = H5Aread(a, t, buf);
     H5Tclose(t);
@@ -1388,8 +1585,10 @@ static int h5_read_attr_string_alloc(hid_t obj, const char *name, char **out_s)
 int field_cache_is_compatible(const char *cache_dir, const InputSimSpec *sim, int require_A,
                               char *why, size_t why_sz)
 {
-    if (why && why_sz) why[0] = '\0';
-    if (!cache_dir || !sim) return -1;
+    if (why && why_sz)
+        why[0] = '\0';
+    if (!cache_dir || !sim)
+        return -1;
 
     /* Open merged Ex.h5 (we use a single component as authority) */
     char path[512];
@@ -1398,7 +1597,8 @@ int field_cache_is_compatible(const char *cache_dir, const InputSimSpec *sim, in
     hid_t f = h5_open_ro_or_fail(path);
     if (f < 0)
     {
-        if (why && why_sz) snprintf(why, why_sz, "cannot open \"%s\"", path);
+        if (why && why_sz)
+            snprintf(why, why_sz, "cannot open \"%s\"", path);
         return 0;
     }
 
@@ -1406,19 +1606,21 @@ int field_cache_is_compatible(const char *cache_dir, const InputSimSpec *sim, in
     int hasA_file = 0;
 
     int rkey = h5_read_attr_string_alloc(f, "CACHE_KEY", &key_file);
-    int rA   = h5_read_attr_int(f, "CACHE_HAS_A", &hasA_file);
+    int rA = h5_read_attr_int(f, "CACHE_HAS_A", &hasA_file);
 
     H5Fclose(f);
 
     if (rkey <= 0 || !key_file)
     {
-        if (why && why_sz) snprintf(why, why_sz, "missing CACHE_KEY in \"%s\"", path);
+        if (why && why_sz)
+            snprintf(why, why_sz, "missing CACHE_KEY in \"%s\"", path);
         free(key_file);
         return 0;
     }
     if (rA <= 0)
     {
-        if (why && why_sz) snprintf(why, why_sz, "missing CACHE_HAS_A in \"%s\"", path);
+        if (why && why_sz)
+            snprintf(why, why_sz, "missing CACHE_HAS_A in \"%s\"", path);
         free(key_file);
         return 0;
     }
@@ -1427,7 +1629,8 @@ int field_cache_is_compatible(const char *cache_dir, const InputSimSpec *sim, in
     char *cfg = field_cache_build_config_string(sim, require_A ? 1 : 0);
     if (!cfg)
     {
-        if (why && why_sz) snprintf(why, why_sz, "OOM building expected config");
+        if (why && why_sz)
+            snprintf(why, why_sz, "OOM building expected config");
         free(key_file);
         return -2;
     }
@@ -1440,14 +1643,16 @@ int field_cache_is_compatible(const char *cache_dir, const InputSimSpec *sim, in
 
     if (strcmp(key_file, key_expected) != 0)
     {
-        if (why && why_sz) snprintf(why, why_sz, "CACHE_KEY mismatch (file=%s expected=%s)", key_file, key_expected);
+        if (why && why_sz)
+            snprintf(why, why_sz, "CACHE_KEY mismatch (file=%s expected=%s)", key_file, key_expected);
         free(key_file);
         return 0;
     }
 
     if (require_A && !hasA_file)
     {
-        if (why && why_sz) snprintf(why, why_sz, "cache does not contain A (CACHE_HAS_A=0)");
+        if (why && why_sz)
+            snprintf(why, why_sz, "cache does not contain A (CACHE_HAS_A=0)");
         free(key_file);
         return 0;
     }
@@ -1542,35 +1747,65 @@ int field_cache_run(const InputSimSpec *sim,
 
             rc = merge_component_2d(g, prefix, "Ex", opt.compute_A, opt.root_rank, comm,
                                     cache_config, cache_key, opt.compute_A);
-            if (rc == 0) remove_rank_files(prefix, "Ex", nr, opt.root_rank, comm);
-            if (rc != 0) { free(cache_config); return 20 + rc; }
+            if (rc == 0)
+                remove_rank_files(prefix, "Ex", nr, opt.root_rank, comm);
+            if (rc != 0)
+            {
+                free(cache_config);
+                return 20 + rc;
+            }
 
             rc = merge_component_2d(g, prefix, "Ey", opt.compute_A, opt.root_rank, comm,
                                     cache_config, cache_key, opt.compute_A);
-            if (rc == 0) remove_rank_files(prefix, "Ey", nr, opt.root_rank, comm);
-            if (rc != 0) { free(cache_config); return 21 + rc; }
+            if (rc == 0)
+                remove_rank_files(prefix, "Ey", nr, opt.root_rank, comm);
+            if (rc != 0)
+            {
+                free(cache_config);
+                return 21 + rc;
+            }
 
             rc = merge_component_2d(g, prefix, "Ez", opt.compute_A, opt.root_rank, comm,
                                     cache_config, cache_key, opt.compute_A);
-            if (rc == 0) remove_rank_files(prefix, "Ez", nr, opt.root_rank, comm);
-            if (rc != 0) { free(cache_config); return 22 + rc; }
+            if (rc == 0)
+                remove_rank_files(prefix, "Ez", nr, opt.root_rank, comm);
+            if (rc != 0)
+            {
+                free(cache_config);
+                return 22 + rc;
+            }
 
             if (opt.compute_A)
             {
                 rc = merge_component_2d(g, prefix, "Ax", opt.compute_A, opt.root_rank, comm,
                                         cache_config, cache_key, opt.compute_A);
-                if (rc == 0) remove_rank_files(prefix, "Ax", nr, opt.root_rank, comm);
-                if (rc != 0) { free(cache_config); return 23 + rc; }
+                if (rc == 0)
+                    remove_rank_files(prefix, "Ax", nr, opt.root_rank, comm);
+                if (rc != 0)
+                {
+                    free(cache_config);
+                    return 23 + rc;
+                }
 
                 rc = merge_component_2d(g, prefix, "Ay", opt.compute_A, opt.root_rank, comm,
                                         cache_config, cache_key, opt.compute_A);
-                if (rc == 0) remove_rank_files(prefix, "Ay", nr, opt.root_rank, comm);
-                if (rc != 0) { free(cache_config); return 24 + rc; }
+                if (rc == 0)
+                    remove_rank_files(prefix, "Ay", nr, opt.root_rank, comm);
+                if (rc != 0)
+                {
+                    free(cache_config);
+                    return 24 + rc;
+                }
 
                 rc = merge_component_2d(g, prefix, "Az", opt.compute_A, opt.root_rank, comm,
                                         cache_config, cache_key, opt.compute_A);
-                if (rc == 0) remove_rank_files(prefix, "Az", nr, opt.root_rank, comm);
-                if (rc != 0) { free(cache_config); return 25 + rc; }
+                if (rc == 0)
+                    remove_rank_files(prefix, "Az", nr, opt.root_rank, comm);
+                if (rc != 0)
+                {
+                    free(cache_config);
+                    return 25 + rc;
+                }
             }
 
             MPI_Barrier(comm);
@@ -1604,34 +1839,58 @@ int field_cache_run(const InputSimSpec *sim,
         rc = merge_component_3d(g, prefix, "Ex", opt.compute_A, opt.root_rank, comm,
                                 cache_config, cache_key, opt.compute_A);
         remove_rank_files(prefix, "Ex", nr, opt.root_rank, comm);
-        if (rc != 0) { free(cache_config); return 40 + rc; }
+        if (rc != 0)
+        {
+            free(cache_config);
+            return 40 + rc;
+        }
 
         rc = merge_component_3d(g, prefix, "Ey", opt.compute_A, opt.root_rank, comm,
                                 cache_config, cache_key, opt.compute_A);
         remove_rank_files(prefix, "Ey", nr, opt.root_rank, comm);
-        if (rc != 0) { free(cache_config); return 41 + rc; }
+        if (rc != 0)
+        {
+            free(cache_config);
+            return 41 + rc;
+        }
 
         rc = merge_component_3d(g, prefix, "Ez", opt.compute_A, opt.root_rank, comm,
                                 cache_config, cache_key, opt.compute_A);
         remove_rank_files(prefix, "Ez", nr, opt.root_rank, comm);
-        if (rc != 0) { free(cache_config); return 42 + rc; }
+        if (rc != 0)
+        {
+            free(cache_config);
+            return 42 + rc;
+        }
 
         if (opt.compute_A)
         {
             rc = merge_component_3d(g, prefix, "Ax", opt.compute_A, opt.root_rank, comm,
                                     cache_config, cache_key, opt.compute_A);
             remove_rank_files(prefix, "Ax", nr, opt.root_rank, comm);
-            if (rc != 0) { free(cache_config); return 43 + rc; }
+            if (rc != 0)
+            {
+                free(cache_config);
+                return 43 + rc;
+            }
 
             rc = merge_component_3d(g, prefix, "Ay", opt.compute_A, opt.root_rank, comm,
                                     cache_config, cache_key, opt.compute_A);
             remove_rank_files(prefix, "Ay", nr, opt.root_rank, comm);
-            if (rc != 0) { free(cache_config); return 44 + rc; }
+            if (rc != 0)
+            {
+                free(cache_config);
+                return 44 + rc;
+            }
 
             rc = merge_component_3d(g, prefix, "Az", opt.compute_A, opt.root_rank, comm,
                                     cache_config, cache_key, opt.compute_A);
             remove_rank_files(prefix, "Az", nr, opt.root_rank, comm);
-            if (rc != 0) { free(cache_config); return 45 + rc; }
+            if (rc != 0)
+            {
+                free(cache_config);
+                return 45 + rc;
+            }
         }
     }
 

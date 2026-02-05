@@ -169,6 +169,16 @@ int BuiltLasers_build(const InputSimSpec *sim, BuiltLasers *out)
             return 40 + rc;
 
         out->pulse_ptrs[i] = (const LaserPulse *)&out->single[i];
+        /* Enable numeric A(t,r) integration so field_cache can write Ax/Ay/Az. */
+        {
+            const double tmin_fs = sim->grid.t_min;
+            const double tmax_fs = sim->grid.t_max;
+
+            /* "Slower but safer" option: smaller dt for A integral to reduce artefacts. */
+            const double dtA_fs = sim->grid.dt / 1.0; /* change 10.0 -> 1.0 for faster */
+
+            SinglePulse_enable_A(&out->single[i], tmin_fs, tmax_fs, dtA_fs);
+        }
     }
 
     // Build a sum pulse if multiple lasers exist
@@ -178,6 +188,13 @@ int BuiltLasers_build(const InputSimSpec *sim, BuiltLasers *out)
         if (rc != 0)
             return 50 + rc;
         out->has_sum = 1;
+        /* Enable A for the composite pulse as well (field_cache uses the active pulse). */
+        {
+            const double tmin_fs = sim->grid.t_min;
+            const double tmax_fs = sim->grid.t_max;
+            const double dtA_fs = sim->grid.dt / 1.0; /* match above */
+            MultiPulse_enable_A(&out->sum, tmin_fs, tmax_fs, dtA_fs);
+        }
     }
 
     return 0;

@@ -19,9 +19,9 @@ write = true  # if computing: write HDF5 outputs
 # ==============================
 
 [grid]
-t_min = -200.0
-t_max = 200.0
-dt = 0.02
+t_min = -2000.0
+t_max = 2000.0
+dt = 0.2
 
 # 1D: "x","y","z" ; 2D: "xy","xz","yz" (and permutations)
 spatial_axes = "zx"
@@ -30,13 +30,13 @@ fixed = { x = 0.0, y = 0.0, z = 0.0 }
 
 # Axis definitions:
 # ax1 corresponds to first letter in spatial_axes, ax2 to second letter (if present)
-ax1_min = -0.1
-ax1_max = 0.1
-dx1 = 0.02
+ax1_min = -5
+ax1_max = 5
+dx1 = 0.2
 
-ax2_min = -0.1
-ax2_max = 0.1
-dx2 = 0.02
+ax2_min = -5
+ax2_max = 5
+dx2 = 0.2
 # For 1D, omit ax2_*.
 
 # =========================
@@ -46,17 +46,18 @@ dx2 = 0.02
 [[laser]]
 type = "standard"
 E0 = 200.0
-wavelength = 0.8
+wavelength = 10
 phase0 = 0.0
 k_vec = [0.0, 0.0, 1.0]
 r_start = [0.0, 0.0, 0.0]
 use_retarded_time = true
 temporal_type = "gaussian"
-tau = 30.0
+tau = 750.0
 transverse_type = "gaussian"
 w0 = 4.0
 zf = 0.0
-polarization = "linear"
+polarization = "circular"
+sense = "right"
 angle = 0.0
 
 # ====================
@@ -90,16 +91,7 @@ pos_t = 10.0
 # =========================
 
 [[phase_space]]
-
-phase_space = "pz"
-region = { xmin = -5, xmax = 5, zmin = -5, zmax = 5 }
-envelope_cut = 1e-6
-bins1 = { nbins = 600, min = -2.0, max = 2.0 }
-
-[[phase_space]]
-
 phase_space = "pxpy"
-region = { xmin = -5, xmax = 5, ymin = 10, ymax = 1, zmin = 0, zmax = 5 }
 envelope_cut = 1e-6
-bins1 = { nbins = 600, min = -2.0, max = 2.0 }
-bins2 = { nbins = 600, min = -2.0, max = 2.0 }
+bins1 = { nbins = 2000, min = -1.0, max = 1.0 }
+bins2 = { nbins = 2000, min = -1.0, max = 1.0 }

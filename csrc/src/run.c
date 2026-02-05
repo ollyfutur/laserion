@@ -13,6 +13,7 @@
 #include "field_diag.h"
 #include "ionization_diag.h"
 #include "ionization_model.h"
+#include "mdf_diag.h"
 
 static void print_field_diag_requests(const FieldDiagList *L, MPI_Comm comm)
 {
@@ -237,6 +238,14 @@ int run_from_inputdeck(const char *toml_path, MPI_Comm comm)
             inputdeck_free(&sim);
             return rcd;
         }
+
+        rcd = ensure_dir_exists_p("MS/mdf", comm);
+        if (rcd != 0)
+        {
+            BuiltLasers_free(&bl);
+            inputdeck_free(&sim);
+            return rcd;
+        }
     }
 
     /* Cache directory is always "./MS/cache" inside the working directory */
@@ -251,7 +260,7 @@ int run_from_inputdeck(const char *toml_path, MPI_Comm comm)
     if (fc->mode == FC_MODE_OFF)
     {
         /* If any cache-based diagnostics were requested, cache is required (by design). */
-        if (sim.field_diag.n > 0 || sim.ionization_frac.enabled)
+        if (sim.field_diag.n > 0 || sim.ionization_frac.enabled || sim.phase_space.n > 0)
         {
             if (rank == 0)
                 fprintf(stderr,
@@ -293,7 +302,7 @@ int run_from_inputdeck(const char *toml_path, MPI_Comm comm)
              * You explicitly asked to not write cache, and keep_in_memory is true.
              * But field_diag and ionization_frac currently read from disk cache, so they can't run in that mode.
              */
-            if (sim.field_diag.n > 0 || sim.ionization_frac.enabled)
+            if (sim.field_diag.n > 0 || sim.ionization_frac.enabled || sim.phase_space.n > 0)
             {
                 if (rank == 0)
                     fprintf(stderr,
@@ -344,8 +353,8 @@ int run_from_inputdeck(const char *toml_path, MPI_Comm comm)
 
                     if (rank == opt.root_rank)
                         ok = field_cache_is_compatible(cache_dir, &sim,
-                                                    /*require_A=*/opt.compute_A,
-                                                    why, sizeof(why));
+                                                       /*require_A=*/opt.compute_A,
+                                                       why, sizeof(why));
 
                     MPI_Bcast(&ok, 1, MPI_INT, opt.root_rank, comm);
 
@@ -361,7 +370,7 @@ int run_from_inputdeck(const char *toml_path, MPI_Comm comm)
                     {
                         if (rank == opt.root_rank)
                             printf("run: field_cache load successful (cache compatible in %s/)\n",
-                                cache_dir);
+                                   cache_dir);
                         rc_main = 0;
                     }
                 }
@@ -375,8 +384,8 @@ int run_from_inputdeck(const char *toml_path, MPI_Comm comm)
 
                     if (rank == opt.root_rank)
                         ok = field_cache_is_compatible(cache_dir, &sim,
-                                                    /*require_A=*/opt.compute_A,
-                                                    why, sizeof(why));
+                                                       /*require_A=*/opt.compute_A,
+                                                       why, sizeof(why));
 
                     MPI_Bcast(&ok, 1, MPI_INT, opt.root_rank, comm);
 
@@ -384,15 +393,15 @@ int run_from_inputdeck(const char *toml_path, MPI_Comm comm)
                     {
                         if (rank == opt.root_rank)
                             printf("run: field_cache auto mode — using existing compatible cache in %s/\n",
-                                cache_dir);
+                                   cache_dir);
                         rc_main = 0;
                     }
                     else
                     {
                         if (rank == opt.root_rank)
                             printf("run: field_cache auto mode — cache incompatible: %s\n"
-                                "run: recomputing cache in %s/\n",
-                                why, cache_dir);
+                                   "run: recomputing cache in %s/\n",
+                                   why, cache_dir);
 
                         rc_main = field_cache_run(&sim, pulse, cache_dir, &opt, comm);
                     }
@@ -479,6 +488,32 @@ int run_from_inputdeck(const char *toml_path, MPI_Comm comm)
             if (rank == 0)
             {
                 fprintf(stderr, "run: ionization_frac failed (rc=%d)\n", 2000 + irc);
+                fflush(stderr);
+            }
+        }
+    }
+
+    /* ------------------------- run MDF phase-space diagnostics -------------- */
+    if (sim.phase_space.n > 0)
+    {
+        if (rank == 0)
+        {
+            printf("run: mdf_diag — computing %d phase-space diagnostic(s) from cache in %s/ to %s/\n",
+                   sim.phase_space.n, "MS/cache", "MS/mdf");
+            fflush(stdout);
+        }
+
+        int mrc = mdf_diag_run_all_from_cache(&sim, "MS/cache", "MS/mdf", comm);
+
+        /* Convention: MDF_DIAG_SKIPPED_NO_A is “not an error”, just means A cache missing. */
+        if (mrc != 0 && mrc != MDF_DIAG_SKIPPED_NO_A)
+        {
+            if (rc_diag == 0)
+                rc_diag = 3000 + mrc;
+
+            if (rank == 0)
+            {
+                fprintf(stderr, "run: mdf_diag failed (rc=%d)\n", 3000 + mrc);
                 fflush(stderr);
             }
         }
