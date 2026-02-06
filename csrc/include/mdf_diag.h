@@ -28,6 +28,7 @@ extern "C"
     /* Compute one MDF histogram for a given PhaseSpaceSpec from cache. */
     int mdf_diag_run_one_from_cache(const InputSimSpec *sim,
                                     const PhaseSpaceSpec *ps,
+                                    int ps_index,
                                     const char *cache_dir,
                                     const char *out_dir,
                                     MPI_Comm comm);

@@ -586,6 +586,7 @@ static int compute_crop_ranges(const InputGridSpec *g,
 
 int mdf_diag_run_one_from_cache(const InputSimSpec *sim,
                                 const PhaseSpaceSpec *ps,
+                                int ps_index,
                                 const char *cache_dir,
                                 const char *out_dir,
                                 MPI_Comm comm)
@@ -742,15 +743,6 @@ int mdf_diag_run_one_from_cache(const InputSimSpec *sim,
     rc = cachecomp_open(&cAz, cache_dir, "Az", g);
     if (rc != 0)
         goto fail;
-
-    if (rank == 0)
-    {
-        char kindbuf[32];
-        kind_to_strings(ps->kind, kindbuf, sizeof(kindbuf));
-        printf("run: mdf_diag — %s (%s), MPI ranks=%d, region=%s, using_A_cache\n",
-               kindbuf, cache_dir, size, ps->has_region ? "ON" : "OFF");
-        fflush(stdout);
-    }
 
     if (!has_points)
     {
@@ -923,7 +915,7 @@ write_out:
         build_label(ps->kind, label, sizeof(label));
 
         char path[1024];
-        snprintf(path, sizeof(path), "%s/mdf_%s.h5", out_dir, kindbuf);
+        snprintf(path, sizeof(path), "%s/mdf_%03d_%s.h5", out_dir, ps_index, kindbuf);
 
         float *data_f32 = (float *)malloc(hist_sz * sizeof(float));
         if (!data_f32)
@@ -1038,7 +1030,7 @@ int mdf_diag_run_all_from_cache(const InputSimSpec *sim,
     for (int i = 0; i < sim->phase_space.n; ++i)
     {
         const PhaseSpaceSpec *ps = &sim->phase_space.v[i];
-        int one = mdf_diag_run_one_from_cache(sim, ps, cache_dir, out_dir, comm);
+        int one = mdf_diag_run_one_from_cache(sim, ps, i, cache_dir, out_dir, comm);
         if (one == MDF_DIAG_SKIPPED_NO_A)
             continue; /* ignore */
         if (one != 0 && rc == 0)

@@ -625,9 +625,9 @@ int iongrid_run_full_from_cache(const InputSimSpec *sim,
             char path[1024];
             snprintf(path, sizeof(path), "%s/ion_frac_total.h5", out_dir);
             int wr = diag_h5_write_grid_2d(path,
-                                           "ion_frac_total",
+                                           "ion frac total",
                                            "1",
-                                           "ion_frac_total",
+                                           "ion frac total",
                                            0.0,
                                            0,
                                            outTot,
@@ -667,9 +667,9 @@ int iongrid_run_full_from_cache(const InputSimSpec *sim,
             char path[1024];
             snprintf(path, sizeof(path), "%s/ion_frac_total.h5", out_dir);
             int wr = diag_h5_write_grid_1d(path,
-                                           "ion_frac_total",
+                                           "ion frac total",
                                            "1",
-                                           "ion_frac_total",
+                                           "ion frac total",
                                            0.0,
                                            0,
                                            outTot,

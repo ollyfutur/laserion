@@ -31,6 +31,18 @@ static double rng_uniform01(unsigned long long *state)
 
 /* ---------------- utilities ---------------- */
 
+static int stochastic_round(double x, unsigned long long *rng)
+{
+    if (!(x > 0.0))
+        return 0;
+    double f = floor(x);
+    double r = x - f;
+    int n = (int)f;
+    if (rng_uniform01(rng) < r)
+        n += 1;
+    return n;
+}
+
 static int validate_opt(const MDFParticlesOptions *o)
 {
     if (!o)
@@ -102,6 +114,151 @@ static size_t sample_index_from_cdf(const double *cdf, size_t n, double u_scaled
             lo = mid + 1;
     }
     return lo;
+}
+
+static int passes_envelope_cut(const double *Eabs, size_t Nt, double envelope_cut)
+{
+    if (!(envelope_cut > 0.0))
+        return 1;
+    double mx = 0.0;
+    for (size_t i = 0; i < Nt; ++i)
+        if (Eabs[i] > mx)
+            mx = Eabs[i];
+    return (mx >= envelope_cut) ? 1 : 0;
+}
+
+static void sim_spatial_domain(const InputSimSpec *sim,
+                               double *xmin, double *xmax,
+                               double *ymin, double *ymax,
+                               double *zmin, double *zmax)
+{
+    /* Start from fixed coordinates (degenerate extent) */
+    double x0 = sim->grid.fixed_x, x1 = sim->grid.fixed_x;
+    double y0 = sim->grid.fixed_y, y1 = sim->grid.fixed_y;
+    double z0 = sim->grid.fixed_z, z1 = sim->grid.fixed_z;
+
+    /* Axis 1 */
+    if (sim->grid.ax1 == AXIS_X)
+    {
+        x0 = sim->grid.ax1_min;
+        x1 = sim->grid.ax1_max;
+    }
+    if (sim->grid.ax1 == AXIS_Y)
+    {
+        y0 = sim->grid.ax1_min;
+        y1 = sim->grid.ax1_max;
+    }
+    if (sim->grid.ax1 == AXIS_Z)
+    {
+        z0 = sim->grid.ax1_min;
+        z1 = sim->grid.ax1_max;
+    }
+
+    /* Axis 2 (if present) */
+    if (sim->grid.has_ax2)
+    {
+        if (sim->grid.ax2 == AXIS_X)
+        {
+            x0 = sim->grid.ax2_min;
+            x1 = sim->grid.ax2_max;
+        }
+        if (sim->grid.ax2 == AXIS_Y)
+        {
+            y0 = sim->grid.ax2_min;
+            y1 = sim->grid.ax2_max;
+        }
+        if (sim->grid.ax2 == AXIS_Z)
+        {
+            z0 = sim->grid.ax2_min;
+            z1 = sim->grid.ax2_max;
+        }
+    }
+
+    /* Ensure min<=max even if inputdeck ever swaps them */
+    if (x1 < x0)
+    {
+        double t = x0;
+        x0 = x1;
+        x1 = t;
+    }
+    if (y1 < y0)
+    {
+        double t = y0;
+        y0 = y1;
+        y1 = t;
+    }
+    if (z1 < z0)
+    {
+        double t = z0;
+        z0 = z1;
+        z1 = t;
+    }
+
+    *xmin = x0;
+    *xmax = x1;
+    *ymin = y0;
+    *ymax = y1;
+    *zmin = z0;
+    *zmax = z1;
+}
+
+/* ---- dimension semantics inference (same idea as mdf_diag) ---- */
+
+static int infer_dim_semantics(int rank,
+                               const hsize_t *dims,
+                               size_t t_n,
+                               size_t ax1_n,
+                               size_t ax2_n,
+                               int has_ax2,
+                               char *dim_sem)
+{
+    if (!dims || !dim_sem)
+        return 1;
+    if (!(rank == 2 || rank == 3))
+        return 2;
+
+    for (int k = 0; k < rank; ++k)
+        dim_sem[k] = '?';
+
+    int used_t = 0, used_1 = 0, used_2 = 0;
+
+    for (int k = 0; k < rank; ++k)
+        if (!used_t && (size_t)dims[k] == t_n)
+        {
+            dim_sem[k] = 't';
+            used_t = 1;
+        }
+
+    for (int k = 0; k < rank; ++k)
+        if (dim_sem[k] == '?' && !used_1 && (size_t)dims[k] == ax1_n)
+        {
+            dim_sem[k] = '1';
+            used_1 = 1;
+        }
+
+    for (int k = 0; k < rank; ++k)
+        if (dim_sem[k] == '?' && rank == 3 && has_ax2 && !used_2 && (size_t)dims[k] == ax2_n)
+        {
+            dim_sem[k] = '2';
+            used_2 = 1;
+        }
+
+    for (int k = 0; k < rank; ++k)
+        if (dim_sem[k] == '?')
+            return 3;
+
+    if (!used_t)
+        return 4;
+    if (!used_1)
+        return 5;
+    if (rank == 3)
+    {
+        if (!has_ax2)
+            return 6;
+        if (!used_2)
+            return 7;
+    }
+    return 0;
 }
 
 /* ---------------- legacy entry point (kept) ----------------
@@ -605,51 +762,44 @@ static int cache_read_component_timeseries(const InputSimSpec *sim,
         return 21;
     }
 
-    /* Identify time dimension by matching Nt */
-    int it_dim = -1;
-    for (int k = 0; k < nd; ++k)
-    {
-        if ((size_t)dims[k] == Nt)
-        {
-            it_dim = k;
-            break;
-        }
-    }
-    if (it_dim < 0)
+    const InputGridSpec *g = &sim->grid;
+
+    /* Infer which dimension is time / ax1 / ax2 by matching sizes */
+    char dim_sem[3] = {'?', '?', '?'};
+    const int irc = infer_dim_semantics(nd, dims,
+                                        (size_t)Nt,
+                                        (size_t)g->ax1_n,
+                                        (size_t)g->ax2_n,
+                                        g->has_ax2 ? 1 : 0,
+                                        dim_sem);
+    if (irc != 0)
     {
         H5Sclose(s);
         H5Dclose(d);
         H5Fclose(f);
-        return 22;
-    }
-
-    /* Collect spatial dims (those != it_dim) in order */
-    int sd[2] = {-1, -1};
-    int ns = 0;
-    for (int k = 0; k < nd; ++k)
-    {
-        if (k == it_dim)
-            continue;
-        if (ns < 2)
-            sd[ns++] = k;
+        return 22; /* could not infer semantics */
     }
 
     hsize_t start[3] = {0, 0, 0};
     hsize_t count[3] = {1, 1, 1};
 
-    start[it_dim] = 0;
-    count[it_dim] = (hsize_t)Nt;
-
-    if (ns >= 1)
+    for (int k = 0; k < nd; ++k)
     {
-        start[sd[0]] = (hsize_t)i1;
-        count[sd[0]] = 1;
-    }
-    if (ns >= 2)
-    {
-        /* If the cache is actually 2D (nd=2), this never happens */
-        start[sd[1]] = (hsize_t)i2;
-        count[sd[1]] = 1;
+        if (dim_sem[k] == 't')
+        {
+            start[k] = 0;
+            count[k] = (hsize_t)Nt;
+        }
+        else if (dim_sem[k] == '1')
+        {
+            start[k] = (hsize_t)i1;
+            count[k] = 1;
+        }
+        else if (dim_sem[k] == '2')
+        {
+            start[k] = (hsize_t)i2;
+            count[k] = 1;
+        }
     }
 
     if (H5Sselect_hyperslab(s, H5S_SELECT_SET, start, NULL, count, NULL) < 0)
@@ -660,7 +810,7 @@ static int cache_read_component_timeseries(const InputSimSpec *sim,
         return 23;
     }
 
-    /* Memory space: 1D [Nt] */
+    /* Memory space is always 1D [Nt] */
     hsize_t mdims[1] = {(hsize_t)Nt};
     hid_t ms = H5Screate_simple(1, mdims, NULL);
     if (ms < 0)
@@ -671,6 +821,7 @@ static int cache_read_component_timeseries(const InputSimSpec *sim,
         return 24;
     }
 
+    /* Let HDF5 convert float->double if needed */
     herr_t st = H5Dread(d, H5T_NATIVE_DOUBLE, ms, s, H5P_DEFAULT, out_t);
 
     H5Sclose(ms);
@@ -701,6 +852,39 @@ int mdf_particles_run_from_cache(const InputSimSpec *sim,
     MPI_Comm_size(comm, &size);
 
     const int root = (opt->root_rank >= 0) ? opt->root_rank : 0;
+
+    /* --- restrict requested region to the simulation (cached-field) spatial domain --- */
+    double sxmin, sxmax, symin, symax, szmin, szmax;
+    sim_spatial_domain(sim, &sxmin, &sxmax, &symin, &symax, &szmin, &szmax);
+
+    double xmin_eff = fmax(opt->xmin, sxmin);
+    double xmax_eff = fmin(opt->xmax, sxmax);
+    double ymin_eff = fmax(opt->ymin, symin);
+    double ymax_eff = fmin(opt->ymax, symax);
+    double zmin_eff = fmax(opt->zmin, szmin);
+    double zmax_eff = fmin(opt->zmax, szmax);
+
+    /* If an axis is not spatial (n==1), force it to a single coordinate */
+    if (opt->nx == 1)
+    {
+        xmin_eff = xmax_eff = sim->grid.fixed_x;
+    }
+    if (opt->ny == 1)
+    {
+        ymin_eff = ymax_eff = sim->grid.fixed_y;
+    }
+    if (opt->nz == 1)
+    {
+        zmin_eff = zmax_eff = sim->grid.fixed_z;
+    }
+
+    /* If after intersection there is no extent on a sampled axis, nothing to generate */
+    if (opt->nx > 1 && !(xmax_eff > xmin_eff))
+        return 4003;
+    if (opt->ny > 1 && !(ymax_eff > ymin_eff))
+        return 4003;
+    if (opt->nz > 1 && !(zmax_eff > zmin_eff))
+        return 4003;
 
     /* Determine Nt robustly */
     size_t Nt = 0;
@@ -733,7 +917,7 @@ int mdf_particles_run_from_cache(const InputSimSpec *sim,
     const long long c1 = (Ncells * (rank + 1)) / size;
 
     const long long local_cells = (c1 - c0);
-    const size_t local_n = (size_t)local_cells * (size_t)opt->ppc;
+    const size_t local_n = (size_t)local_cells * (size_t)opt->ppc * (size_t)opt->nZ;
 
     float *x = (float *)malloc(local_n * sizeof(float));
     float *y = (float *)malloc(local_n * sizeof(float));
@@ -808,16 +992,16 @@ int mdf_particles_run_from_cache(const InputSimSpec *sim,
         const int iz = (int)(tmp % opt->nz);
 
         double xa, xb, ya, yb, za, zb;
-        cell_bounds(opt->xmin, opt->xmax, opt->nx, ix, &xa, &xb);
-        cell_bounds(opt->ymin, opt->ymax, opt->ny, iy, &ya, &yb);
-        cell_bounds(opt->zmin, opt->zmax, opt->nz, iz, &za, &zb);
+        cell_bounds(xmin_eff, xmax_eff, opt->nx, ix, &xa, &xb);
+        cell_bounds(ymin_eff, ymax_eff, opt->ny, iy, &ya, &yb);
+        cell_bounds(zmin_eff, zmax_eff, opt->nz, iz, &za, &zb);
 
         if (!opt->mdf_at_particle_position)
         {
             double xc, yc, zc;
-            cell_center(opt->xmin, opt->xmax, opt->nx, ix, &xc);
-            cell_center(opt->ymin, opt->ymax, opt->ny, iy, &yc);
-            cell_center(opt->zmin, opt->zmax, opt->nz, iz, &zc);
+            cell_center(xmin_eff, xmax_eff, opt->nx, ix, &xc);
+            cell_center(ymin_eff, ymax_eff, opt->ny, iy, &yc);
+            cell_center(zmin_eff, zmax_eff, opt->nz, iz, &zc);
 
             int i1 = 0, i2 = 0;
             map_r_to_spatial_indices(&sim->grid, xc, yc, zc, &i1, &i2);
@@ -839,6 +1023,9 @@ int mdf_particles_run_from_cache(const InputSimSpec *sim,
 
             for (size_t it = 0; it < Nt; ++it)
                 Eabs[it] = sqrt(Ex[it] * Ex[it] + Ey[it] * Ey[it] + Ez[it] * Ez[it]);
+
+            if (!passes_envelope_cut(Eabs, Nt, opt->envelope_cut))
+                continue;
 
             if (ION_compute_timeseries(opt->ion_model, opt->species,
                                        opt->Z_list, opt->nZ,
@@ -862,24 +1049,47 @@ int mdf_particles_run_from_cache(const InputSimSpec *sim,
             if (!(sum > 0.0))
                 continue;
 
-            for (int ip = 0; ip < opt->ppc; ++ip)
+            for (size_t l = 0; l < opt->nZ; ++l)
             {
-                const double xr = xa + (xb - xa) * rng_uniform01(&rng);
-                const double yr = ya + (yb - ya) * rng_uniform01(&rng);
-                const double zr = za + (zb - za) * rng_uniform01(&rng);
+                /* Build CDF for this level from dP_l(t) */
+                double sum_l = 0.0;
+                for (size_t it = 0; it < Nt; ++it)
+                {
+                    double wlt = dP[l * Nt + it];
+                    if (wlt < 0.0)
+                        wlt = 0.0;
+                    sum_l += wlt;
+                    cdf[it] = sum_l;
+                }
 
-                const double u = rng_uniform01(&rng) * sum;
-                const size_t it = sample_index_from_cdf(cdf, Nt, u);
+                if (!(sum_l > 0.0))
+                    continue;
 
-                x[out_k] = (float)xr;
-                y[out_k] = (float)yr;
-                z[out_k] = (float)zr;
+                /* expected #particles for this level */
+                const double expected = (double)opt->ppc * sum_l; /* if sum_l~1 => ~ppc */
+                const int Nemit = stochastic_round(expected, &rng);
+                if (Nemit <= 0)
+                    continue;
 
-                px[out_k] = (float)(MDF_CONV_A_TO_P * Ax[it]);
-                py[out_k] = (float)(MDF_CONV_A_TO_P * Ay[it]);
-                pz[out_k] = (float)(MDF_CONV_A_TO_P * Az[it]);
+                for (int ip = 0; ip < Nemit; ++ip)
+                {
+                    const double xr = xa + (xb - xa) * rng_uniform01(&rng);
+                    const double yr = ya + (yb - ya) * rng_uniform01(&rng);
+                    const double zr = za + (zb - za) * rng_uniform01(&rng);
 
-                ++out_k;
+                    const double u = rng_uniform01(&rng) * sum_l;
+                    const size_t it = sample_index_from_cdf(cdf, Nt, u);
+
+                    x[out_k] = (float)xr;
+                    y[out_k] = (float)yr;
+                    z[out_k] = (float)zr;
+
+                    px[out_k] = (float)(MDF_CONV_A_TO_P * Ax[it]);
+                    py[out_k] = (float)(MDF_CONV_A_TO_P * Ay[it]);
+                    pz[out_k] = (float)(MDF_CONV_A_TO_P * Az[it]);
+
+                    ++out_k;
+                }
             }
         }
         else

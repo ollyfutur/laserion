@@ -30,13 +30,13 @@ fixed = { x = 0.0, y = 0.0, z = 0.0 }
 
 # Axis definitions:
 # ax1 corresponds to first letter in spatial_axes, ax2 to second letter (if present)
-ax1_min = -5
-ax1_max = 5
-dx1 = 0.2
+ax1_min = -50
+ax1_max = 50
+dx1 = 2
 
-ax2_min = -5
-ax2_max = 5
-dx2 = 0.2
+ax2_min = -50
+ax2_max = 50
+dx2 = 2
 # For 1D, omit ax2_*.
 
 # =========================
@@ -97,7 +97,7 @@ bins1 = { nbins = 2000, min = -1.0, max = 1.0 }
 bins2 = { nbins = 2000, min = -1.0, max = 1.0 }
 
 [[particles]]
-#region = { xmin = -5, xmax = 5, ymin = 10, ymax = 0, zmin = -5, zmax = 5 }
-sampling = { nx = 10, ny = 1, nz = 10 }
-ppc = 50
+#region = { xmin = -1, xmax = 1, ymin = -10, ymax = 0, zmin = -10, zmax = 10 }
+sampling = { nx = 20, ny = 1, nz = 20 }
+ppc = 100
 seed = 0
