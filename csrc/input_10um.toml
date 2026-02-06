@@ -3,7 +3,7 @@
 # =========================
 
 [run]
-working_dir = "."
+working_dir = "./test3"
 gas = "He"
 
 # =========================
@@ -12,7 +12,6 @@ gas = "He"
 
 [field_cache]
 mode = "auto" # "auto" | "compute" | "load" | "off"
-write = true  # if computing: write HDF5 outputs
 
 # ==============================
 # 2) Temporal/Spatial parameters
@@ -25,8 +24,7 @@ dt = 0.2
 
 # 1D: "x","y","z" ; 2D: "xy","xz","yz" (and permutations)
 spatial_axes = "zx"
-
-fixed = { x = 0.0, y = 0.0, z = 0.0 }
+fixed.y = 20
 
 # Axis definitions:
 # ax1 corresponds to first letter in spatial_axes, ax2 to second letter (if present)

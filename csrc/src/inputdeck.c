@@ -1383,18 +1383,19 @@ static int parse_lasers(toml_table_t *root, InputLaserDeck *deck)
 
         // type
         char *stype = get_string_dup(tl, "type");
-        if (!stype)
+        if (stype)
         {
-            fprintf(stderr, "inputdeck: laser[%d] missing key type\n", i);
-            return 4;
-        }
-        if (parse_laser_type(stype, &L.type) != 0)
-        {
-            fprintf(stderr, "inputdeck: laser[%d] invalid type=\"%s\"\n", i, stype);
+            if (parse_laser_type(stype, &L.type) != 0)
+            {
+                fprintf(stderr,
+                        "inputdeck: laser[%d] invalid type=\"%s\"\n",
+                        i, stype);
+                free(stype);
+                return 5;
+            }
             free(stype);
-            return 5;
         }
-        free(stype);
+        /* else: keep default LASER_STANDARD */
 
         (void)get_double(tl, "E0", &L.E0);
         (void)get_double(tl, "wavelength", &L.wavelength);
