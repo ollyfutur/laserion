@@ -103,3 +103,9 @@ region = { xmin = -5, xmax = 5, ymin = 10, ymax = 1, zmin = 0, zmax = 5 }
 envelope_cut = 1e-6
 bins1 = { nbins = 600, min = -2.0, max = 2.0 }
 bins2 = { nbins = 600, min = -2.0, max = 2.0 }
+
+[[particles]]
+region = { xmin = -5, xmax = 5, ymin = 10, ymax = 0, zmin = -5, zmax = 5 }
+sampling = { nx = 10, ny = 1, nz = 10 }
+ppc = 50
+seed = 0

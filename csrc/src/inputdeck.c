@@ -298,22 +298,59 @@ static int parse_sense(const char *s, PolarizationSense *out)
 
 static int parse_phase_space_kind(const char *s, PhaseSpaceKind *out)
 {
-    if (!s) return 1;
+    if (!s)
+        return 1;
 
     /* 1D */
-    if (streqi(s, "px")) { *out = PHASESPACE_PX; return 0; }
-    if (streqi(s, "py")) { *out = PHASESPACE_PY; return 0; }
-    if (streqi(s, "pz")) { *out = PHASESPACE_PZ; return 0; }
+    if (streqi(s, "px"))
+    {
+        *out = PHASESPACE_PX;
+        return 0;
+    }
+    if (streqi(s, "py"))
+    {
+        *out = PHASESPACE_PY;
+        return 0;
+    }
+    if (streqi(s, "pz"))
+    {
+        *out = PHASESPACE_PZ;
+        return 0;
+    }
 
     /* 2D ordered pairs (order matters) */
-    if (streqi(s, "pxpy")) { *out = PHASESPACE_PX_PY; return 0; }
-    if (streqi(s, "pypx")) { *out = PHASESPACE_PY_PX; return 0; }
+    if (streqi(s, "pxpy"))
+    {
+        *out = PHASESPACE_PX_PY;
+        return 0;
+    }
+    if (streqi(s, "pypx"))
+    {
+        *out = PHASESPACE_PY_PX;
+        return 0;
+    }
 
-    if (streqi(s, "pxpz")) { *out = PHASESPACE_PX_PZ; return 0; }
-    if (streqi(s, "pzpx")) { *out = PHASESPACE_PZ_PX; return 0; }
+    if (streqi(s, "pxpz"))
+    {
+        *out = PHASESPACE_PX_PZ;
+        return 0;
+    }
+    if (streqi(s, "pzpx"))
+    {
+        *out = PHASESPACE_PZ_PX;
+        return 0;
+    }
 
-    if (streqi(s, "pypz")) { *out = PHASESPACE_PY_PZ; return 0; }
-    if (streqi(s, "pzpy")) { *out = PHASESPACE_PZ_PY; return 0; }
+    if (streqi(s, "pypz"))
+    {
+        *out = PHASESPACE_PY_PZ;
+        return 0;
+    }
+    if (streqi(s, "pzpy"))
+    {
+        *out = PHASESPACE_PZ_PY;
+        return 0;
+    }
 
     return 2;
 }
@@ -327,11 +364,12 @@ static bool phasespace_is_2d(PhaseSpaceKind k)
 
 static bool grid_uses_axis(const InputGridSpec *g, Axis a)
 {
-    if (g->ax1 == a) return true;
-    if (g->has_ax2 && g->ax2 == a) return true;
+    if (g->ax1 == a)
+        return true;
+    if (g->has_ax2 && g->ax2 == a)
+        return true;
     return false;
 }
-
 
 /* -------------------------- field_cache defaults/parse -------------------------- */
 
@@ -576,29 +614,36 @@ static int parse_ionization_frac(toml_table_t *root, IonFracSpec *s)
 static int parse_bins_table(toml_table_t *t, const char *key, int *nbins, double *vmin, double *vmax)
 {
     toml_table_t *tb = toml_table_in(t, key);
-    if (!tb) return 0; /* missing */
+    if (!tb)
+        return 0; /* missing */
 
     int n;
-    if (!get_int(tb, "nbins", &n) || n <= 0) return -1;
+    if (!get_int(tb, "nbins", &n) || n <= 0)
+        return -1;
 
     double a, b;
-    if (!get_double(tb, "min", &a)) return -2;
-    if (!get_double(tb, "max", &b)) return -3;
-    if (!(b > a)) return -4;
+    if (!get_double(tb, "min", &a))
+        return -2;
+    if (!get_double(tb, "max", &b))
+        return -3;
+    if (!(b > a))
+        return -4;
 
     *nbins = n;
-    *vmin  = a;
-    *vmax  = b;
+    *vmin = a;
+    *vmax = b;
     return 1;
 }
 
 static int parse_phase_space(toml_table_t *root, const InputGridSpec *g, PhaseSpaceList *L)
 {
     toml_array_t *arr = toml_array_in(root, "phase_space");
-    if (!arr) return 0; /* optional */
+    if (!arr)
+        return 0; /* optional */
 
     int n = toml_array_nelem(arr);
-    if (n <= 0) return 0;
+    if (n <= 0)
+        return 0;
 
     L->v = (PhaseSpaceSpec *)xmalloc((size_t)n * sizeof(PhaseSpaceSpec));
     L->n = 0;
@@ -644,9 +689,12 @@ static int parse_phase_space(toml_table_t *root, const InputGridSpec *g, PhaseSp
             d.has_region = true;
 
             /* defaults allow “clip to cache bounds” later */
-            d.xmin = -INFINITY; d.xmax = +INFINITY;
-            d.ymin = -INFINITY; d.ymax = +INFINITY;
-            d.zmin = -INFINITY; d.zmax = +INFINITY;
+            d.xmin = -INFINITY;
+            d.xmax = +INFINITY;
+            d.ymin = -INFINITY;
+            d.ymax = +INFINITY;
+            d.zmin = -INFINITY;
+            d.zmax = +INFINITY;
 
             (void)get_double(tr, "xmin", &d.xmin);
             (void)get_double(tr, "xmax", &d.xmax);
@@ -681,7 +729,6 @@ static int parse_phase_space(toml_table_t *root, const InputGridSpec *g, PhaseSp
                         "inputdeck: phase_space[%d] region.zmax must be > zmin\n", i);
                 return 6;
             }
-
         }
 
         (void)get_double(td, "envelope_cut", &d.envelope_cut);
@@ -734,7 +781,215 @@ static int parse_phase_space(toml_table_t *root, const InputGridSpec *g, PhaseSp
     return 0;
 }
 
+static int parse_particles(toml_table_t *root, const InputGridSpec *g, ParticlesList *L)
+{
+    toml_array_t *arr = toml_array_in(root, "particles");
+    if (!arr)
+        return 0; /* optional */
 
+    int n = toml_array_nelem(arr);
+    if (n <= 0)
+        return 0;
+
+    L->v = (ParticlesSpec *)xmalloc((size_t)n * sizeof(ParticlesSpec));
+    L->n = 0;
+
+    for (int i = 0; i < n; ++i)
+    {
+        toml_table_t *td = toml_table_at(arr, i);
+        if (!td)
+        {
+            fprintf(stderr, "inputdeck: particles[%d] is not a table\n", i);
+            return 1;
+        }
+
+        ParticlesSpec p;
+        memset(&p, 0, sizeof(p));
+
+        /* Defaults */
+        p.has_region = false;
+
+        /* Store “full domain” as infinities so runtime can clip to cache bounds. */
+        p.xmin = -INFINITY;
+        p.xmax = +INFINITY;
+        p.ymin = -INFINITY;
+        p.ymax = +INFINITY;
+        p.zmin = -INFINITY;
+        p.zmax = +INFINITY;
+
+        /* Sampling defaults: use the grid resolution on swept axes, else 1. */
+        p.nx = grid_uses_axis(g, AXIS_X) ? (grid_uses_axis(g, g->ax1) ? g->ax1_n : 1) : 1;
+        p.ny = grid_uses_axis(g, AXIS_Y) ? 1 : 1;
+        p.nz = grid_uses_axis(g, AXIS_Z) ? (grid_uses_axis(g, g->ax1) ? g->ax1_n : 1) : 1;
+
+        /* Better defaults for 2D: map ax2_n too. */
+        if (g->has_ax2)
+        {
+            if (g->ax1 == AXIS_X)
+                p.nx = g->ax1_n;
+            if (g->ax1 == AXIS_Y)
+                p.ny = g->ax1_n;
+            if (g->ax1 == AXIS_Z)
+                p.nz = g->ax1_n;
+
+            if (g->ax2 == AXIS_X)
+                p.nx = g->ax2_n;
+            if (g->ax2 == AXIS_Y)
+                p.ny = g->ax2_n;
+            if (g->ax2 == AXIS_Z)
+                p.nz = g->ax2_n;
+        }
+        else
+        {
+            /* 1D: ax1 is the only swept axis */
+            if (g->ax1 == AXIS_X)
+                p.nx = g->ax1_n;
+            if (g->ax1 == AXIS_Y)
+                p.ny = g->ax1_n;
+            if (g->ax1 == AXIS_Z)
+                p.nz = g->ax1_n;
+        }
+
+        p.ppc = 50;
+        p.seed = 0ULL;
+
+        /* region = { ... } optional */
+        toml_table_t *tr = toml_table_in(td, "region");
+        if (tr)
+        {
+            p.has_region = true;
+
+            /* Read values, but only validate/apply those axes that are in the spatial domain. */
+            double tmp;
+
+            if (grid_uses_axis(g, AXIS_X))
+            {
+                if (get_double(tr, "xmin", &tmp))
+                    p.xmin = tmp;
+                if (get_double(tr, "xmax", &tmp))
+                    p.xmax = tmp;
+                if (isfinite(p.xmin) && isfinite(p.xmax) && !(p.xmax > p.xmin))
+                {
+                    fprintf(stderr, "inputdeck: particles[%d] region.xmax must be > xmin\n", i);
+                    return 2;
+                }
+            }
+            else
+            {
+                /* Axis not in domain: force fixed value */
+                p.xmin = p.xmax = g->fixed_x;
+            }
+
+            if (grid_uses_axis(g, AXIS_Y))
+            {
+                if (get_double(tr, "ymin", &tmp))
+                    p.ymin = tmp;
+                if (get_double(tr, "ymax", &tmp))
+                    p.ymax = tmp;
+                if (isfinite(p.ymin) && isfinite(p.ymax) && !(p.ymax > p.ymin))
+                {
+                    fprintf(stderr, "inputdeck: particles[%d] region.ymax must be > ymin\n", i);
+                    return 3;
+                }
+            }
+            else
+            {
+                p.ymin = p.ymax = g->fixed_y;
+            }
+
+            if (grid_uses_axis(g, AXIS_Z))
+            {
+                if (get_double(tr, "zmin", &tmp))
+                    p.zmin = tmp;
+                if (get_double(tr, "zmax", &tmp))
+                    p.zmax = tmp;
+                if (isfinite(p.zmin) && isfinite(p.zmax) && !(p.zmax > p.zmin))
+                {
+                    fprintf(stderr, "inputdeck: particles[%d] region.zmax must be > zmin\n", i);
+                    return 4;
+                }
+            }
+            else
+            {
+                p.zmin = p.zmax = g->fixed_z;
+            }
+        }
+        else
+        {
+            /* No region: still force fixed coordinates for non-domain axes */
+            if (!grid_uses_axis(g, AXIS_X))
+                p.xmin = p.xmax = g->fixed_x;
+            if (!grid_uses_axis(g, AXIS_Y))
+                p.ymin = p.ymax = g->fixed_y;
+            if (!grid_uses_axis(g, AXIS_Z))
+                p.zmin = p.zmax = g->fixed_z;
+        }
+
+        /* sampling = { nx=..., ny=..., nz=... } optional */
+        toml_table_t *ts = toml_table_in(td, "sampling");
+        if (ts)
+        {
+            int v;
+            if (grid_uses_axis(g, AXIS_X) && get_int(ts, "nx", &v))
+                p.nx = v;
+            if (grid_uses_axis(g, AXIS_Y) && get_int(ts, "ny", &v))
+                p.ny = v;
+            if (grid_uses_axis(g, AXIS_Z) && get_int(ts, "nz", &v))
+                p.nz = v;
+        }
+
+        /* ppc and seed */
+        (void)get_int(td, "ppc", &p.ppc);
+
+        /* seed may exceed int, so parse as toml_int_in and cast safely */
+        {
+            toml_datum_t sd = toml_int_in(td, "seed");
+            if (sd.ok)
+            {
+                if (sd.u.i < 0)
+                {
+                    fprintf(stderr, "inputdeck: particles[%d] seed must be >= 0\n", i);
+                    return 5;
+                }
+                p.seed = (unsigned long long)sd.u.i;
+            }
+        }
+
+        /* Validate sampling/ppc only for active axes */
+        if (grid_uses_axis(g, AXIS_X) && p.nx <= 0)
+        {
+            fprintf(stderr, "inputdeck: particles[%d] sampling.nx must be > 0\n", i);
+            return 6;
+        }
+        if (grid_uses_axis(g, AXIS_Y) && p.ny <= 0)
+        {
+            fprintf(stderr, "inputdeck: particles[%d] sampling.ny must be > 0\n", i);
+            return 7;
+        }
+        if (grid_uses_axis(g, AXIS_Z) && p.nz <= 0)
+        {
+            fprintf(stderr, "inputdeck: particles[%d] sampling.nz must be > 0\n", i);
+            return 8;
+        }
+        if (p.ppc <= 0)
+        {
+            fprintf(stderr, "inputdeck: particles[%d] ppc must be > 0\n", i);
+            return 9;
+        }
+
+        /* For non-domain axes, enforce sampling=1 */
+        if (!grid_uses_axis(g, AXIS_X))
+            p.nx = 1;
+        if (!grid_uses_axis(g, AXIS_Y))
+            p.ny = 1;
+        if (!grid_uses_axis(g, AXIS_Z))
+            p.nz = 1;
+
+        L->v[L->n++] = p;
+    }
+
+    return 0;
+}
 
 /* -------------------------- deck memory -------------------------- */
 
@@ -779,7 +1034,23 @@ static void phase_space_init(PhaseSpaceList *L)
 
 static void phase_space_free(PhaseSpaceList *L)
 {
-    if (!L) return;
+    if (!L)
+        return;
+    free(L->v);
+    L->v = NULL;
+    L->n = 0;
+}
+
+static void particles_init(ParticlesList *L)
+{
+    L->n = 0;
+    L->v = NULL;
+}
+
+static void particles_free(ParticlesList *L)
+{
+    if (!L)
+        return;
     free(L->v);
     L->v = NULL;
     L->n = 0;
@@ -1297,8 +1568,7 @@ int inputdeck_read(const char *path, InputSimSpec *sim)
     field_diag_init(&sim->field_diag);
     sim->ionization_frac.enabled = false;
     phase_space_init(&sim->phase_space);
-
-
+    particles_init(&sim->particles);
 
     char *text = read_entire_file(path);
     if (!text)
@@ -1346,6 +1616,9 @@ int inputdeck_read(const char *path, InputSimSpec *sim)
     if (rc != 0)
         goto done;
 
+    rc = parse_particles(root, &sim->grid, &sim->particles);
+    if (rc != 0)
+        goto done;
 
 done:
     toml_free(root);
@@ -1369,6 +1642,7 @@ void inputdeck_free(InputSimSpec *sim)
     sim->lasers.capacity = 0;
     field_diag_free(&sim->field_diag);
     phase_space_free(&sim->phase_space);
+    particles_free(&sim->particles);
 }
 
 void inputdeck_dump(const InputSimSpec *sim)
@@ -1441,24 +1715,51 @@ void inputdeck_dump(const InputSimSpec *sim)
         const char *k = "?";
         switch (p->kind)
         {
-            case PHASESPACE_PX: k="px"; break;
-            case PHASESPACE_PY: k="py"; break;
-            case PHASESPACE_PZ: k="pz"; break;
-            case PHASESPACE_PX_PY: k="pxpy"; break;
-            case PHASESPACE_PY_PX: k="pypx"; break;
-            case PHASESPACE_PX_PZ: k="pxpz"; break;
-            case PHASESPACE_PZ_PX: k="pzpx"; break;
-            case PHASESPACE_PY_PZ: k="pypz"; break;
-            case PHASESPACE_PZ_PY: k="pzpy"; break;
+        case PHASESPACE_PX:
+            k = "px";
+            break;
+        case PHASESPACE_PY:
+            k = "py";
+            break;
+        case PHASESPACE_PZ:
+            k = "pz";
+            break;
+        case PHASESPACE_PX_PY:
+            k = "pxpy";
+            break;
+        case PHASESPACE_PY_PX:
+            k = "pypx";
+            break;
+        case PHASESPACE_PX_PZ:
+            k = "pxpz";
+            break;
+        case PHASESPACE_PZ_PX:
+            k = "pzpx";
+            break;
+        case PHASESPACE_PY_PZ:
+            k = "pypz";
+            break;
+        case PHASESPACE_PZ_PY:
+            k = "pzpy";
+            break;
         }
         printf("  [%d] kind=%s envelope_cut=%g norm=%s\n", i, k, p->envelope_cut,
-            p->normalize_sum_to_1 ? "true" : "false");
+               p->normalize_sum_to_1 ? "true" : "false");
         if (p->has_region)
             printf("      region x=[%g,%g] y=[%g,%g] z=[%g,%g]\n",
-                p->xmin,p->xmax,p->ymin,p->ymax,p->zmin,p->zmax);
+                   p->xmin, p->xmax, p->ymin, p->ymax, p->zmin, p->zmax);
         printf("      bins1 nbins=%d [%g,%g]\n", p->nbins1, p->p1min, p->p1max);
         if (p->has_bins2)
             printf("      bins2 nbins=%d [%g,%g]\n", p->nbins2, p->p2min, p->p2max);
+    }
+    printf("\n[particles] n=%d\n", sim->particles.n);
+    for (int i = 0; i < sim->particles.n; ++i)
+    {
+        const ParticlesSpec *p = &sim->particles.v[i];
+        printf("  [%d] ppc=%d seed=%llu sampling=(%d,%d,%d)\n",
+               i, p->ppc, (unsigned long long)p->seed, p->nx, p->ny, p->nz);
+        printf("      region x=[%g,%g] y=[%g,%g] z=[%g,%g]\n",
+               p->xmin, p->xmax, p->ymin, p->ymax, p->zmin, p->zmax);
     }
 }
 

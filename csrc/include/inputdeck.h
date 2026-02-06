@@ -13,7 +13,7 @@ extern "C"
 
     typedef enum
     {
-        AXIS_INVALID =-1,
+        AXIS_INVALID = -1,
         AXIS_X = 0,
         AXIS_Y = 1,
         AXIS_Z = 2
@@ -173,16 +173,16 @@ extern "C"
 
     typedef struct
     {
-        bool enabled;    /* present [ionization_frac] table */
+        bool enabled; /* present [ionization_frac] table */
     } IonFracSpec;
 
-/* -------------------------- Phase-space (MDF) diagnostics -------------------------- */
+    /* -------------------------- Phase-space (MDF) diagnostics -------------------------- */
 
     typedef enum
     {
-        PHASESPACE_PX    = 0,
-        PHASESPACE_PY    = 1,
-        PHASESPACE_PZ    = 2,
+        PHASESPACE_PX = 0,
+        PHASESPACE_PY = 1,
+        PHASESPACE_PZ = 2,
 
         /* 2D ordered pairs (order matters) */
         PHASESPACE_PX_PY = 3,
@@ -226,6 +226,31 @@ extern "C"
         PhaseSpaceSpec *v;
     } PhaseSpaceList;
 
+    /* -------------------------- Particle phase-space sampling -------------------------- */
+
+    typedef struct
+    {
+        /* Optional spatial region (um). If omitted, runtime can default to full cache region. */
+        bool has_region;
+        double xmin, xmax;
+        double ymin, ymax;
+        double zmin, zmax;
+
+        /* Sampling grid in space (number of spatial cells used for sampling) */
+        int nx, ny, nz;
+
+        /* Particles per cell */
+        int ppc;
+
+        /* RNG seed (0 allowed: auto) */
+        unsigned long long seed;
+    } ParticlesSpec;
+
+    typedef struct
+    {
+        int n;
+        ParticlesSpec *v;
+    } ParticlesList;
 
     typedef struct
     {
@@ -236,6 +261,7 @@ extern "C"
         FieldDiagList field_diag;
         IonFracSpec ionization_frac;
         PhaseSpaceList phase_space;
+        ParticlesList particles;
     } InputSimSpec;
 
     /**

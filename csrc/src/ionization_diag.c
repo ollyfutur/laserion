@@ -16,25 +16,32 @@
 
 static void join_path(char *out, size_t outsz, const char *a, const char *b)
 {
-    if (!a) a = "";
-    if (!b) b = "";
+    if (!a)
+        a = "";
+    if (!b)
+        b = "";
     const size_t na = strlen(a);
     const int need_slash = (na > 0 && a[na - 1] != '/');
-    if (need_slash) snprintf(out, outsz, "%s/%s", a, b);
-    else            snprintf(out, outsz, "%s%s", a, b);
+    if (need_slash)
+        snprintf(out, outsz, "%s/%s", a, b);
+    else
+        snprintf(out, outsz, "%s%s", a, b);
 }
 
 static char grid_axis_to_char(Axis a)
 {
     switch (a)
     {
-    case AXIS_X: return 'x';
-    case AXIS_Y: return 'y';
-    case AXIS_Z: return 'z';
-    default:     return 'x';
+    case AXIS_X:
+        return 'x';
+    case AXIS_Y:
+        return 'y';
+    case AXIS_Z:
+        return 'z';
+    default:
+        return 'x';
     }
 }
-
 
 /* --------------------- infer cache dimension semantics -------------------- */
 /*
@@ -49,32 +56,51 @@ static int infer_dim_semantics(int rank,
                                int has_ax2,
                                char *dim_sem /* length rank */)
 {
-    if (!dims || !dim_sem) return 1;
-    if (!(rank == 2 || rank == 3)) return 2;
+    if (!dims || !dim_sem)
+        return 1;
+    if (!(rank == 2 || rank == 3))
+        return 2;
 
-    for (int k = 0; k < rank; ++k) dim_sem[k] = '?';
+    for (int k = 0; k < rank; ++k)
+        dim_sem[k] = '?';
 
     int used_t = 0, used_1 = 0, used_2 = 0;
 
     for (int k = 0; k < rank; ++k)
-        if (!used_t && (size_t)dims[k] == t_n) { dim_sem[k] = 't'; used_t = 1; }
+        if (!used_t && (size_t)dims[k] == t_n)
+        {
+            dim_sem[k] = 't';
+            used_t = 1;
+        }
 
     for (int k = 0; k < rank; ++k)
-        if (dim_sem[k] == '?' && !used_1 && (size_t)dims[k] == ax1_n) { dim_sem[k] = '1'; used_1 = 1; }
+        if (dim_sem[k] == '?' && !used_1 && (size_t)dims[k] == ax1_n)
+        {
+            dim_sem[k] = '1';
+            used_1 = 1;
+        }
 
     for (int k = 0; k < rank; ++k)
         if (dim_sem[k] == '?' && rank == 3 && has_ax2 && !used_2 && (size_t)dims[k] == ax2_n)
-        { dim_sem[k] = '2'; used_2 = 1; }
+        {
+            dim_sem[k] = '2';
+            used_2 = 1;
+        }
 
     for (int k = 0; k < rank; ++k)
-        if (dim_sem[k] == '?') return 3;
+        if (dim_sem[k] == '?')
+            return 3;
 
-    if (!used_t) return 4;
-    if (!used_1) return 5;
+    if (!used_t)
+        return 4;
+    if (!used_1)
+        return 5;
     if (rank == 3)
     {
-        if (!has_ax2) return 6;
-        if (!used_2)  return 7;
+        if (!has_ax2)
+            return 6;
+        if (!used_2)
+            return 7;
     }
     return 0;
 }
@@ -84,7 +110,8 @@ static int sem_to_k(char sem, const char *dim_sem, int rank, int *out_k)
     for (int k = 0; k < rank; ++k)
         if (dim_sem[k] == sem)
         {
-            if (out_k) *out_k = k;
+            if (out_k)
+                *out_k = k;
             return 0;
         }
     return 1;
@@ -94,16 +121,19 @@ static int sem_to_k(char sem, const char *dim_sem, int rank, int *out_k)
 
 static int infer_Zmax_from_tables(const char *species, int *Zmax_out)
 {
-    if (!species || !Zmax_out) return 1;
+    if (!species || !Zmax_out)
+        return 1;
 
     int Z = 1;
     for (;;)
     {
         double E = 0.0;
         int rc = ADK_ionization_energy(&E, species, Z);
-        if (rc != 0) break;
+        if (rc != 0)
+            break;
         ++Z;
-        if (Z > 256) return 2;
+        if (Z > 256)
+            return 2;
     }
     *Zmax_out = Z - 1;
     return (*Zmax_out > 0) ? 0 : 3;
@@ -116,18 +146,22 @@ typedef struct CacheComp
     hid_t f;
     hid_t dset;
     hid_t fspace;
-    int   rank;
+    int rank;
     hsize_t dims[3];
-    char  dim_sem[3];
-    int   k_t, k_1, k_2;
+    char dim_sem[3];
+    int k_t, k_1, k_2;
 } CacheComp;
 
 static void cachecomp_close(CacheComp *c)
 {
-    if (!c) return;
-    if (c->fspace >= 0) H5Sclose(c->fspace);
-    if (c->dset   >= 0) H5Dclose(c->dset);
-    if (c->f      >= 0) H5Fclose(c->f);
+    if (!c)
+        return;
+    if (c->fspace >= 0)
+        H5Sclose(c->fspace);
+    if (c->dset >= 0)
+        H5Dclose(c->dset);
+    if (c->f >= 0)
+        H5Fclose(c->f);
     c->f = c->dset = c->fspace = -1;
 }
 
@@ -150,31 +184,63 @@ static int cachecomp_open(CacheComp *cc,
     join_path(fpath, sizeof(fpath), cache_dir, fname);
 
     cc->f = H5Fopen(fpath, H5F_ACC_RDONLY, H5P_DEFAULT);
-    if (cc->f < 0) return 10;
+    if (cc->f < 0)
+        return 10;
 
     cc->dset = H5Dopen2(cc->f, comp, H5P_DEFAULT);
-    if (cc->dset < 0) { cachecomp_close(cc); return 11; }
+    if (cc->dset < 0)
+    {
+        cachecomp_close(cc);
+        return 11;
+    }
 
     cc->fspace = H5Dget_space(cc->dset);
-    if (cc->fspace < 0) { cachecomp_close(cc); return 12; }
+    if (cc->fspace < 0)
+    {
+        cachecomp_close(cc);
+        return 12;
+    }
 
     cc->rank = H5Sget_simple_extent_ndims(cc->fspace);
-    if (!(cc->rank == 2 || cc->rank == 3)) { cachecomp_close(cc); return 13; }
+    if (!(cc->rank == 2 || cc->rank == 3))
+    {
+        cachecomp_close(cc);
+        return 13;
+    }
 
     if (H5Sget_simple_extent_dims(cc->fspace, cc->dims, NULL) < 0)
-    { cachecomp_close(cc); return 14; }
+    {
+        cachecomp_close(cc);
+        return 14;
+    }
 
-    const size_t t_n   = (size_t)g->t_n;
+    const size_t t_n = (size_t)g->t_n;
     const size_t ax1_n = (size_t)g->ax1_n;
     const size_t ax2_n = (size_t)g->ax2_n;
 
     int irc = infer_dim_semantics(cc->rank, cc->dims, t_n, ax1_n, ax2_n, g->has_ax2 ? 1 : 0, cc->dim_sem);
-    if (irc != 0) { cachecomp_close(cc); return 15; }
+    if (irc != 0)
+    {
+        cachecomp_close(cc);
+        return 15;
+    }
 
-    if (sem_to_k('t', cc->dim_sem, cc->rank, &cc->k_t) != 0) { cachecomp_close(cc); return 16; }
-    if (sem_to_k('1', cc->dim_sem, cc->rank, &cc->k_1) != 0) { cachecomp_close(cc); return 17; }
+    if (sem_to_k('t', cc->dim_sem, cc->rank, &cc->k_t) != 0)
+    {
+        cachecomp_close(cc);
+        return 16;
+    }
+    if (sem_to_k('1', cc->dim_sem, cc->rank, &cc->k_1) != 0)
+    {
+        cachecomp_close(cc);
+        return 17;
+    }
     if (cc->rank == 3)
-        if (sem_to_k('2', cc->dim_sem, cc->rank, &cc->k_2) != 0) { cachecomp_close(cc); return 18; }
+        if (sem_to_k('2', cc->dim_sem, cc->rank, &cc->k_2) != 0)
+        {
+            cachecomp_close(cc);
+            return 18;
+        }
 
     return 0;
 }
@@ -195,29 +261,47 @@ static int cachecomp_read_tile(const CacheComp *cc,
     const size_t t_n = (size_t)g->t_n;
     const int rank = cc->rank;
 
-    hsize_t start[3] = {0,0,0};
-    hsize_t count[3] = {1,1,1};
+    hsize_t start[3] = {0, 0, 0};
+    hsize_t count[3] = {1, 1, 1};
 
     for (int k = 0; k < rank; ++k)
     {
         const char sem = cc->dim_sem[k];
-        if (sem == 't') { start[k] = 0;           count[k] = (hsize_t)t_n; }
-        if (sem == '1') { start[k] = (hsize_t)i1_0; count[k] = (hsize_t)n1; }
-        if (sem == '2') { start[k] = (hsize_t)i2_0; count[k] = (hsize_t)n2; }
+        if (sem == 't')
+        {
+            start[k] = 0;
+            count[k] = (hsize_t)t_n;
+        }
+        if (sem == '1')
+        {
+            start[k] = (hsize_t)i1_0;
+            count[k] = (hsize_t)n1;
+        }
+        if (sem == '2')
+        {
+            start[k] = (hsize_t)i2_0;
+            count[k] = (hsize_t)n2;
+        }
     }
 
     if (H5Sselect_hyperslab(cc->fspace, H5S_SELECT_SET, start, NULL, count, NULL) < 0)
         return 20;
 
     hid_t mspace = H5Screate_simple(rank, count, NULL);
-    if (mspace < 0) return 21;
+    if (mspace < 0)
+        return 21;
 
     /* read into a raw buffer with the file's dimension order */
     size_t nread = 1;
-    for (int k = 0; k < rank; ++k) nread *= (size_t)count[k];
+    for (int k = 0; k < rank; ++k)
+        nread *= (size_t)count[k];
 
-    float *buf = (float*)malloc(nread * sizeof(float));
-    if (!buf) { H5Sclose(mspace); return 22; }
+    float *buf = (float *)malloc(nread * sizeof(float));
+    if (!buf)
+    {
+        H5Sclose(mspace);
+        return 22;
+    }
 
     if (H5Dread(cc->dset, H5T_NATIVE_FLOAT, mspace, cc->fspace, H5P_DEFAULT, buf) < 0)
     {
@@ -227,7 +311,7 @@ static int cachecomp_read_tile(const CacheComp *cc,
     }
 
     /* strides in buf */
-    size_t stride[3] = {0,0,0};
+    size_t stride[3] = {0, 0, 0};
     stride[rank - 1] = 1;
     for (int k = rank - 2; k >= 0; --k)
         stride[k] = stride[k + 1] * (size_t)count[k + 1];
@@ -267,7 +351,8 @@ int iongrid_run_full_from_cache(const InputSimSpec *sim,
                                 const char *out_dir,
                                 MPI_Comm comm)
 {
-    if (!sim || !cache_dir || !out_dir) return 1;
+    if (!sim || !cache_dir || !out_dir)
+        return 1;
 
     int rank = 0;
     MPI_Comm_rank(comm, &rank);
@@ -280,7 +365,7 @@ int iongrid_run_full_from_cache(const InputSimSpec *sim,
     }
 
     const InputGridSpec *g = &sim->grid;
-    const size_t t_n   = (size_t)g->t_n;
+    const size_t t_n = (size_t)g->t_n;
     const size_t ax1_n = (size_t)g->ax1_n;
     const size_t ax2_n = g->has_ax2 ? (size_t)g->ax2_n : 1u;
 
@@ -294,9 +379,14 @@ int iongrid_run_full_from_cache(const InputSimSpec *sim,
     }
 
     const size_t nZ = (size_t)Zmax;
-    int *Z_list = (int*)malloc(nZ * sizeof(int));
-    if (!Z_list) { MPI_Barrier(comm); return 3; }
-    for (size_t i = 0; i < nZ; ++i) Z_list[i] = (int)(i + 1);
+    int *Z_list = (int *)malloc(nZ * sizeof(int));
+    if (!Z_list)
+    {
+        MPI_Barrier(comm);
+        return 3;
+    }
+    for (size_t i = 0; i < nZ; ++i)
+        Z_list[i] = (int)(i + 1);
 
     /* Build the ionization model (only ADK currently). */
     ADKModel adk;
@@ -304,74 +394,108 @@ int iongrid_run_full_from_cache(const InputSimSpec *sim,
     const IonizationModel *model = &adk.base;
 
     /* Precompute time array (fs). */
-    double *t_fs = (double*)malloc(t_n * sizeof(double));
-    if (!t_fs) { free(Z_list); MPI_Barrier(comm); return 4; }
+    double *t_fs = (double *)malloc(t_n * sizeof(double));
+    if (!t_fs)
+    {
+        free(Z_list);
+        MPI_Barrier(comm);
+        return 4;
+    }
     for (size_t it = 0; it < t_n; ++it)
         t_fs[it] = g->t_min + g->dt * (double)it;
 
     /* Output arrays are small (ax1_n * ax2_n). */
     const size_t nxy = ax1_n * ax2_n;
 
-    float **outP = (float**)calloc(nZ, sizeof(float*));
-    if (!outP) { free(t_fs); free(Z_list); MPI_Barrier(comm); return 5; }
+    float **outP = (float **)calloc(nZ, sizeof(float *));
+    if (!outP)
+    {
+        free(t_fs);
+        free(Z_list);
+        MPI_Barrier(comm);
+        return 5;
+    }
     for (size_t iz = 0; iz < nZ; ++iz)
     {
-        outP[iz] = (float*)malloc(nxy * sizeof(float));
-        if (!outP[iz]) { for (size_t k=0;k<iz;++k) free(outP[k]); free(outP); free(t_fs); free(Z_list); MPI_Barrier(comm); return 6; }
-        for (size_t j=0;j<nxy;++j) outP[iz][j] = NAN;
+        outP[iz] = (float *)malloc(nxy * sizeof(float));
+        if (!outP[iz])
+        {
+            for (size_t k = 0; k < iz; ++k)
+                free(outP[k]);
+            free(outP);
+            free(t_fs);
+            free(Z_list);
+            MPI_Barrier(comm);
+            return 6;
+        }
+        for (size_t j = 0; j < nxy; ++j)
+            outP[iz][j] = NAN;
     }
 
-    float *outTot = (float*)malloc(nxy * sizeof(float));
+    float *outTot = (float *)malloc(nxy * sizeof(float));
     if (!outTot)
     {
-        for (size_t iz=0; iz<nZ; ++iz) free(outP[iz]);
-        free(outP); free(t_fs); free(Z_list);
+        for (size_t iz = 0; iz < nZ; ++iz)
+            free(outP[iz]);
+        free(outP);
+        free(t_fs);
+        free(Z_list);
         MPI_Barrier(comm);
         return 7;
     }
-    for (size_t j=0;j<nxy;++j) outTot[j] = NAN;
+    for (size_t j = 0; j < nxy; ++j)
+        outTot[j] = NAN;
 
     /* Open cache components once. */
     CacheComp cEx, cEy, cEz;
     int rc = 0;
 
-    rc = cachecomp_open(&cEx, cache_dir, "Ex", g); if (rc!=0) goto fail_open;
-    rc = cachecomp_open(&cEy, cache_dir, "Ey", g); if (rc!=0) goto fail_open;
-    rc = cachecomp_open(&cEz, cache_dir, "Ez", g); if (rc!=0) goto fail_open;
+    rc = cachecomp_open(&cEx, cache_dir, "Ex", g);
+    if (rc != 0)
+        goto fail_open;
+    rc = cachecomp_open(&cEy, cache_dir, "Ey", g);
+    if (rc != 0)
+        goto fail_open;
+    rc = cachecomp_open(&cEz, cache_dir, "Ez", g);
+    if (rc != 0)
+        goto fail_open;
 
     /* Tile sizes (space). Keep time full. Adjust if needed. */
     const size_t tile1 = 16;
     const size_t tile2 = g->has_ax2 ? 16 : 1;
 
     float *bufEx = NULL, *bufEy = NULL, *bufEz = NULL;
-    bufEx = (float*)malloc(tile1 * tile2 * t_n * sizeof(float));
-    bufEy = (float*)malloc(tile1 * tile2 * t_n * sizeof(float));
-    bufEz = (float*)malloc(tile1 * tile2 * t_n * sizeof(float));
+    bufEx = (float *)malloc(tile1 * tile2 * t_n * sizeof(float));
+    bufEy = (float *)malloc(tile1 * tile2 * t_n * sizeof(float));
+    bufEz = (float *)malloc(tile1 * tile2 * t_n * sizeof(float));
 
     /* Ionization scratch (per spatial point). */
     double *Eabs = NULL;
-    double *w    = NULL;
-    double *S    = NULL;
-    double *dP   = NULL;
+    double *w = NULL;
+    double *S = NULL;
+    double *dP = NULL;
     double *Plev = NULL;
 
     /* allocate */
-    Eabs = (double*)malloc(t_n * sizeof(double));
-    w    = (double*)malloc((size_t)nZ * (size_t)t_n * sizeof(double));
-    S    = (double*)malloc((size_t)nZ * (size_t)t_n * sizeof(double));
-    dP   = (double*)malloc((size_t)nZ * (size_t)t_n * sizeof(double));
-    Plev = (double*)malloc((size_t)nZ * sizeof(double));
+    Eabs = (double *)malloc(t_n * sizeof(double));
+    w = (double *)malloc((size_t)nZ * (size_t)t_n * sizeof(double));
+    S = (double *)malloc((size_t)nZ * (size_t)t_n * sizeof(double));
+    dP = (double *)malloc((size_t)nZ * (size_t)t_n * sizeof(double));
+    Plev = (double *)malloc((size_t)nZ * sizeof(double));
 
-    if (!bufEx || !bufEy || !bufEz) { rc = 20; goto fail; }
-
-    if (!Eabs || !w || !S || !dP || !Plev)
+    if (!bufEx || !bufEy || !bufEz)
     {
-        rc = 21;            /* pick your error code */
+        rc = 20;
         goto fail;
     }
 
+    if (!Eabs || !w || !S || !dP || !Plev)
+    {
+        rc = 21; /* pick your error code */
+        goto fail;
+    }
 
-    printf("run: ionization_frac — computing full grid from cache (%s), gas=%s, Zmax=%d\n",
+    printf("run: ionization_frac — computing full grid from cache (%s), gas=%s, Zmax=%d\n\n",
            cache_dir, sim->run.gas, Zmax);
     fflush(stdout);
 
@@ -384,9 +508,15 @@ int iongrid_run_full_from_cache(const InputSimSpec *sim,
             const size_t n1 = (i1_0 + tile1 <= ax1_n) ? tile1 : (ax1_n - i1_0);
 
             /* Read tile for Ex/Ey/Ez */
-            rc = cachecomp_read_tile(&cEx, g, i1_0, n1, i2_0, n2, bufEx); if (rc!=0) goto fail;
-            rc = cachecomp_read_tile(&cEy, g, i1_0, n1, i2_0, n2, bufEy); if (rc!=0) goto fail;
-            rc = cachecomp_read_tile(&cEz, g, i1_0, n1, i2_0, n2, bufEz); if (rc!=0) goto fail;
+            rc = cachecomp_read_tile(&cEx, g, i1_0, n1, i2_0, n2, bufEx);
+            if (rc != 0)
+                goto fail;
+            rc = cachecomp_read_tile(&cEy, g, i1_0, n1, i2_0, n2, bufEy);
+            if (rc != 0)
+                goto fail;
+            rc = cachecomp_read_tile(&cEz, g, i1_0, n1, i2_0, n2, bufEz);
+            if (rc != 0)
+                goto fail;
 
             /* For each spatial cell in tile, compute ionization from its time trace */
             for (size_t j2 = 0; j2 < n2; ++j2)
@@ -403,7 +533,7 @@ int iongrid_run_full_from_cache(const InputSimSpec *sim,
                         const double Ex = (double)ex[it];
                         const double Ey = (double)ey[it];
                         const double Ez = (double)ez[it];
-                        Eabs[it] = sqrt(Ex*Ex + Ey*Ey + Ez*Ez);
+                        Eabs[it] = sqrt(Ex * Ex + Ey * Ey + Ez * Ez);
                     }
 
                     double Ptot = 0.0;
@@ -446,8 +576,10 @@ int iongrid_run_full_from_cache(const InputSimSpec *sim,
     /* Axis 1 is sim->grid.ax1 */
     {
         char a1c = grid_axis_to_char(g->ax1);
-        ax1.id = (a1c=='x') ? DIAG_AXIS_X : (a1c=='y') ? DIAG_AXIS_Y : DIAG_AXIS_Z;
-        ax1.long_name = (a1c=='x') ? "x" : (a1c=='y') ? "y" : "z";
+        ax1.id = (a1c == 'x') ? DIAG_AXIS_X : (a1c == 'y') ? DIAG_AXIS_Y
+                                                           : DIAG_AXIS_Z;
+        ax1.long_name = (a1c == 'x') ? "x" : (a1c == 'y') ? "y"
+                                                          : "z";
         ax1.units = "\\mu m";
         ax1.vmin = g->ax1_min;
         ax1.vmax = g->ax1_max;
@@ -458,8 +590,10 @@ int iongrid_run_full_from_cache(const InputSimSpec *sim,
     if (g->has_ax2)
     {
         char a2c = grid_axis_to_char(g->ax2);
-        ax2.id = (a2c=='x') ? DIAG_AXIS_X : (a2c=='y') ? DIAG_AXIS_Y : DIAG_AXIS_Z;
-        ax2.long_name = (a2c=='x') ? "x" : (a2c=='y') ? "y" : "z";
+        ax2.id = (a2c == 'x') ? DIAG_AXIS_X : (a2c == 'y') ? DIAG_AXIS_Y
+                                                           : DIAG_AXIS_Z;
+        ax2.long_name = (a2c == 'x') ? "x" : (a2c == 'y') ? "y"
+                                                          : "z";
         ax2.units = "\\mu m";
         ax2.vmin = g->ax2_min;
         ax2.vmax = g->ax2_max;
@@ -468,7 +602,7 @@ int iongrid_run_full_from_cache(const InputSimSpec *sim,
         {
             char path[1024];
             char name[64];
-            snprintf(name, sizeof(name), "ion_frac_Z%d", (int)(iz+1));
+            snprintf(name, sizeof(name), "ion_frac_Z%d", (int)(iz + 1));
             snprintf(path, sizeof(path), "%s/%s.h5", out_dir, name);
 
             int wr = diag_h5_write_grid_2d(path,
@@ -483,7 +617,8 @@ int iongrid_run_full_from_cache(const InputSimSpec *sim,
                                            &ax1,
                                            &ax2,
                                            &fixed);
-            if (wr != 0 && werr == 0) werr = 100 + wr;
+            if (wr != 0 && werr == 0)
+                werr = 100 + wr;
         }
 
         {
@@ -501,7 +636,8 @@ int iongrid_run_full_from_cache(const InputSimSpec *sim,
                                            &ax1,
                                            &ax2,
                                            &fixed);
-            if (wr != 0 && werr == 0) werr = 200 + wr;
+            if (wr != 0 && werr == 0)
+                werr = 200 + wr;
         }
     }
     else
@@ -510,7 +646,7 @@ int iongrid_run_full_from_cache(const InputSimSpec *sim,
         {
             char path[1024];
             char name[64];
-            snprintf(name, sizeof(name), "ion_frac_Z%d", (int)(iz+1));
+            snprintf(name, sizeof(name), "ion_frac_Z%d", (int)(iz + 1));
             snprintf(path, sizeof(path), "%s/%s.h5", out_dir, name);
 
             int wr = diag_h5_write_grid_1d(path,
@@ -523,7 +659,8 @@ int iongrid_run_full_from_cache(const InputSimSpec *sim,
                                            ax1_n,
                                            &ax1,
                                            &fixed);
-            if (wr != 0 && werr == 0) werr = 100 + wr;
+            if (wr != 0 && werr == 0)
+                werr = 100 + wr;
         }
 
         {
@@ -539,21 +676,29 @@ int iongrid_run_full_from_cache(const InputSimSpec *sim,
                                            ax1_n,
                                            &ax1,
                                            &fixed);
-            if (wr != 0 && werr == 0) werr = 200 + wr;
+            if (wr != 0 && werr == 0)
+                werr = 200 + wr;
         }
     }
 
     rc = werr; /* 0 if OK */
 
 fail:
-    free(Plev); free(dP); free(S); free(w); free(Eabs);
-    free(bufEz); free(bufEy); free(bufEx);
+    free(Plev);
+    free(dP);
+    free(S);
+    free(w);
+    free(Eabs);
+    free(bufEz);
+    free(bufEy);
+    free(bufEx);
     cachecomp_close(&cEz);
     cachecomp_close(&cEy);
     cachecomp_close(&cEx);
 
 fail_open:
-    for (size_t iz=0; iz<nZ; ++iz) free(outP[iz]);
+    for (size_t iz = 0; iz < nZ; ++iz)
+        free(outP[iz]);
     free(outP);
     free(outTot);
     free(t_fs);

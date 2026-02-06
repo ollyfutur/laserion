@@ -1044,5 +1044,10 @@ int mdf_diag_run_all_from_cache(const InputSimSpec *sim,
         if (one != 0 && rc == 0)
             rc = 100 + one;
     }
+    int rank = 0;
+    MPI_Comm_rank(comm, &rank);
+    if (rank == 0)
+        printf("\n");
+    MPI_Barrier(comm);
     return rc;
 }

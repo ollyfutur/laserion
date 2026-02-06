@@ -7,7 +7,7 @@
 #include "laser.h"
 #include "mdf.h"
 #include "ionization_model.h"
-
+#include "inputdeck.h"
 /*
  * Generate particles by sampling the MDF in a spatial region discretized
  * into an (nx,ny,nz) grid, with ppc particles per cell.
@@ -20,10 +20,10 @@ typedef struct MDFParticlesOptions
 {
     /* Species / ionization setup (same meaning as MDF_build) */
     const char *species;
-    const int  *Z_list;
-    size_t      nZ;
+    const int *Z_list;
+    size_t nZ;
     const IonizationModel *ion_model;
-    double      envelope_cut;
+    double envelope_cut;
 
     /* Time window for MDF_build (fs) */
     double tmin_fs;
@@ -47,15 +47,15 @@ typedef struct MDFParticlesOptions
     int mdf_at_particle_position;
 
     /* Output naming */
-    const char *dataset_name;  /* e.g. "electrons" */
-    const char *file_suffix;   /* e.g. "_particles.h5" */
+    const char *dataset_name; /* e.g. "electrons" */
+    const char *file_suffix;  /* e.g. "_particles.h5" */
 
     /* Particle mapping for diag_h5_write_particles (your default is z,x,y and pz,px,py) */
-    int particle_map;          /* use DiagParticleMap values */
+    int particle_map; /* use DiagParticleMap values */
 
     /* MPI and RNG */
-    int root_rank;             /* default 0 if <0 */
-    unsigned long long seed;   /* 0 -> auto-seed from rank */
+    int root_rank;           /* default 0 if <0 */
+    unsigned long long seed; /* 0 -> auto-seed from rank */
 } MDFParticlesOptions;
 
 int mdf_particles_run(const LaserPulse *pulse,
@@ -63,5 +63,10 @@ int mdf_particles_run(const LaserPulse *pulse,
                       const char *path_prefix,
                       MPI_Comm comm);
 
-#endif /* MDF_PARTICLES_H */
+int mdf_particles_run_from_cache(const InputSimSpec *sim,
+                                 const MDFParticlesOptions *opt,
+                                 const char *cache_dir,
+                                 const char *path_prefix,
+                                 MPI_Comm comm);
 
+#endif /* MDF_PARTICLES_H */

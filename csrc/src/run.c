@@ -6,6 +6,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <stdlib.h> /* malloc, free */
 
 #include "inputdeck.h"
 #include "laser_build.h"
@@ -14,6 +15,7 @@
 #include "ionization_diag.h"
 #include "ionization_model.h"
 #include "mdf_diag.h"
+#include "mdf_particles.h"
 
 static void print_field_diag_requests(const FieldDiagList *L, MPI_Comm comm)
 {
@@ -51,6 +53,54 @@ static void print_field_diag_requests(const FieldDiagList *L, MPI_Comm comm)
     }
 
     fflush(stdout);
+}
+
+static void print_particles_requests(const ParticlesList *L, const InputGridSpec *g, MPI_Comm comm, int root_rank)
+{
+    int rank = 0;
+    MPI_Comm_rank(comm, &rank);
+    if (rank != root_rank)
+        return;
+
+    if (!L || L->n == 0)
+    {
+        printf("run: no particle diagnostics requested\n");
+        return;
+    }
+
+    printf("run: %d particle diagnostic(s) requested:\n", L->n);
+
+    for (int i = 0; i < L->n; ++i)
+    {
+        const ParticlesSpec *p = &L->v[i];
+
+        printf("  particles[%d]: ppc=%d seed=%llu sampling(nx,ny,nz)=(%d,%d,%d)\n",
+               i, p->ppc, (unsigned long long)p->seed, p->nx, p->ny, p->nz);
+
+        /* show the region exactly as parsed */
+        printf("    region: x=[%g,%g] y=[%g,%g] z=[%g,%g]\n",
+               p->xmin, p->xmax, p->ymin, p->ymax, p->zmin, p->zmax);
+
+        /* helpful: explicitly show which axes are in the spatial domain */
+        printf("    spatial_axes=%s%s fixed={x=%g,y=%g,z=%g}\n",
+               (g->ax1 == AXIS_X ? "x" : (g->ax1 == AXIS_Y ? "y" : "z")),
+               g->has_ax2 ? (g->ax2 == AXIS_X ? "x" : (g->ax2 == AXIS_Y ? "y" : "z")) : "",
+               g->fixed_x, g->fixed_y, g->fixed_z);
+    }
+    fflush(stdout);
+}
+
+static int run_particles_diag_stub(const InputSimSpec *sim, MPI_Comm comm, int root_rank)
+{
+    int rank = 0;
+    MPI_Comm_rank(comm, &rank);
+
+    if (rank == root_rank)
+        printf("run: particles stub called (no output; implementation pending)\n");
+
+    (void)sim;
+    (void)comm;
+    return 0;
 }
 
 static int ensure_dir_exists_one(const char *path, MPI_Comm comm)
@@ -246,6 +296,13 @@ int run_from_inputdeck(const char *toml_path, MPI_Comm comm)
             inputdeck_free(&sim);
             return rcd;
         }
+        rcd = ensure_dir_exists_p("MS/particles", comm);
+        if (rcd != 0)
+        {
+            BuiltLasers_free(&bl);
+            inputdeck_free(&sim);
+            return rcd;
+        }
     }
 
     /* Cache directory is always "./MS/cache" inside the working directory */
@@ -260,7 +317,7 @@ int run_from_inputdeck(const char *toml_path, MPI_Comm comm)
     if (fc->mode == FC_MODE_OFF)
     {
         /* If any cache-based diagnostics were requested, cache is required (by design). */
-        if (sim.field_diag.n > 0 || sim.ionization_frac.enabled || sim.phase_space.n > 0)
+        if (sim.field_diag.n > 0 || sim.ionization_frac.enabled || sim.phase_space.n > 0 || sim.particles.n > 0)
         {
             if (rank == 0)
                 fprintf(stderr,
@@ -302,7 +359,7 @@ int run_from_inputdeck(const char *toml_path, MPI_Comm comm)
              * You explicitly asked to not write cache, and keep_in_memory is true.
              * But field_diag and ionization_frac currently read from disk cache, so they can't run in that mode.
              */
-            if (sim.field_diag.n > 0 || sim.ionization_frac.enabled || sim.phase_space.n > 0)
+            if (sim.field_diag.n > 0 || sim.ionization_frac.enabled || sim.phase_space.n > 0 || sim.particles.n > 0)
             {
                 if (rank == 0)
                     fprintf(stderr,
@@ -516,6 +573,142 @@ int run_from_inputdeck(const char *toml_path, MPI_Comm comm)
                 fprintf(stderr, "run: mdf_diag failed (rc=%d)\n", 3000 + mrc);
                 fflush(stderr);
             }
+        }
+    }
+
+    /* ------------------------- run particle phase-space diagnostics (stub) ---- */
+    if (sim.particles.n > 0)
+    {
+        if (rank == 0)
+        {
+            printf("run: particle diag — writing to %s/\n", "MS/particles");
+            print_particles_requests(&sim.particles, &sim.grid, comm, /*root_rank=*/0);
+            fflush(stdout);
+        }
+
+        int Zmax = 0;
+        if (ionization_species_Zmax(sim.run.gas, &Zmax) != 0 || Zmax <= 0)
+        {
+            if (rank == 0)
+                fprintf(stderr, "run: cannot determine Zmax for gas=%s\n", sim.run.gas);
+            rc_diag = (rc_diag == 0) ? 4001 : rc_diag;
+        }
+        else
+        {
+            int *Z_list = (int *)malloc((size_t)Zmax * sizeof(int));
+            for (int i = 0; i < Zmax; ++i)
+                Z_list[i] = i + 1;
+
+            ADKModel adk;
+            ADKModel_init(&adk);
+
+            for (int i = 0; i < sim.particles.n; ++i)
+            {
+                const ParticlesSpec *P = &sim.particles.v[i];
+
+                MDFParticlesOptions popt;
+                memset(&popt, 0, sizeof(popt));
+
+                popt.species = sim.run.gas;
+                popt.Z_list = Z_list;
+                popt.nZ = (size_t)Zmax;
+                popt.ion_model = &adk.base;
+                popt.envelope_cut = 0.0;
+
+                popt.tmin_fs = sim.grid.t_min;
+                popt.tmax_fs = sim.grid.t_max;
+                popt.dt_fs = sim.grid.dt;
+
+                /* region: if not specified, take full domain in ALL coords and let MDFParticles handle it */
+                double xmin = sim.grid.fixed_x, xmax = sim.grid.fixed_x;
+                double ymin = sim.grid.fixed_y, ymax = sim.grid.fixed_y;
+                double zmin = sim.grid.fixed_z, zmax = sim.grid.fixed_z;
+
+                /* axis 1 contributes a finite extent */
+                if (sim.grid.ax1 == AXIS_X)
+                {
+                    xmin = sim.grid.ax1_min;
+                    xmax = sim.grid.ax1_max;
+                }
+                if (sim.grid.ax1 == AXIS_Y)
+                {
+                    ymin = sim.grid.ax1_min;
+                    ymax = sim.grid.ax1_max;
+                }
+                if (sim.grid.ax1 == AXIS_Z)
+                {
+                    zmin = sim.grid.ax1_min;
+                    zmax = sim.grid.ax1_max;
+                }
+
+                /* axis 2 contributes a finite extent (if present) */
+                if (sim.grid.has_ax2)
+                {
+                    if (sim.grid.ax2 == AXIS_X)
+                    {
+                        xmin = sim.grid.ax2_min;
+                        xmax = sim.grid.ax2_max;
+                    }
+                    if (sim.grid.ax2 == AXIS_Y)
+                    {
+                        ymin = sim.grid.ax2_min;
+                        ymax = sim.grid.ax2_max;
+                    }
+                    if (sim.grid.ax2 == AXIS_Z)
+                    {
+                        zmin = sim.grid.ax2_min;
+                        zmax = sim.grid.ax2_max;
+                    }
+                }
+
+                /* If user provided an explicit region, override */
+                popt.xmin = P->has_region ? P->xmin : xmin;
+                popt.xmax = P->has_region ? P->xmax : xmax;
+                popt.ymin = P->has_region ? P->ymin : ymin;
+                popt.ymax = P->has_region ? P->ymax : ymax;
+                popt.zmin = P->has_region ? P->zmin : zmin;
+                popt.zmax = P->has_region ? P->zmax : zmax;
+
+                /* Use user sampling, but collapse fixed axes to 1 cell */
+                popt.nx = P->nx;
+                popt.ny = P->ny;
+                popt.nz = P->nz;
+
+                /* If an axis is fixed (not covered by ax1/ax2), force n=1 */
+                int x_is_spatial = (sim.grid.ax1 == AXIS_X) || (sim.grid.has_ax2 && sim.grid.ax2 == AXIS_X);
+                int y_is_spatial = (sim.grid.ax1 == AXIS_Y) || (sim.grid.has_ax2 && sim.grid.ax2 == AXIS_Y);
+                int z_is_spatial = (sim.grid.ax1 == AXIS_Z) || (sim.grid.has_ax2 && sim.grid.ax2 == AXIS_Z);
+
+                if (!x_is_spatial)
+                    popt.nx = 1;
+                if (!y_is_spatial)
+                    popt.ny = 1;
+                if (!z_is_spatial)
+                    popt.nz = 1;
+
+                popt.ppc = P->ppc;
+                popt.seed = P->seed;
+
+                popt.mdf_at_particle_position = 0;
+
+                popt.dataset_name = "electrons";
+                popt.particle_map = DIAG_PARTICLE_MAP_ZXY_PZPXPY; /* your default in diag_h5.c */
+
+                char suffix[64];
+                snprintf(suffix, sizeof(suffix), "/particles_%03d.h5", i);
+                popt.file_suffix = suffix;
+
+                int prc = mdf_particles_run_from_cache(&sim, &popt, "MS/cache", "MS/particles", comm);
+                if (prc != 0)
+                {
+                    if (rc_diag == 0)
+                        rc_diag = 4000 + prc;
+                    if (rank == 0)
+                        fprintf(stderr, "run: particles[%d] failed (rc=%d)\n", i, 4000 + prc);
+                }
+            }
+
+            free(Z_list);
         }
     }
 
