@@ -476,21 +476,27 @@ angle             = 0.0
 sense             = "left"
 
 [[field_diag]]
-axes = "tz"
+axes       = "tz"
 components = ["Ex","Ez"]
 
 [[field_diag]]
-axes = "z"
+axes       = "z"
 components = ["Ex","Ez"]
-pos_t = 1.0
+pos_t      = 1.0
 
 [ionization_frac]
 
 [[phase_space]]
 phase_space = "pxpy"
-bins1 = { nbins=200, min=-5.0, max=5.0 }
-bins2 = { nbins=200, min=-5.0, max=5.0 }
-region = { zmin=-2.0, zmax=2.0 }
+bins1.nbins = 200
+bins1.min   = -1.0
+bins1.max   =  1.0
+bins2.nbins = 200
+bins2.min   = -1.0
+bins2.max   =  1.0
+region.zmin = -2.0
+region.zmax =  2.0
+
 
 [[particles]]
 ppc = 50
