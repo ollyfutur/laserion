@@ -65,6 +65,13 @@ static int build_transverse(const InputLaserSpec *in, const TransverseProfile **
 
     switch (in->transverse_type)
     {
+    case TRANS_PLANE:
+    {
+        PlaneWaveProfile *p = xmalloc(sizeof(*p));
+        PlaneWaveProfile_init(p);
+        *out_tr = (const TransverseProfile *)p;
+        return 0;
+    }
     case TRANS_GAUSSIAN:
     {
         GaussianTransverse *g = (GaussianTransverse *)xmalloc(sizeof(*g));

@@ -1,7 +1,6 @@
 # ================= Layout ===============================================
 
 SRC_DIR   := src
-TEST_DIR  := tests
 BUILD_DIR := build
 BIN_DIR   := bin
 
@@ -77,24 +76,18 @@ LIB_SRCS := \
 	$(SRC_DIR)/inputdeck.c \
 	$(SRC_DIR)/field_cache.c \
 	$(SRC_DIR)/run.c \
-	$(SRC_DIR)/laser_build.c 
+	$(SRC_DIR)/laser_build.c \
+	$(SRC_DIR)/main.c
 
 LIB_OBJS := $(LIB_SRCS:%.c=$(BUILD_DIR)/%.o)
 
-# ================= Tests ==================================================
-# Add new tests by listing the names here (without .c).
-# Each test source must be: tests/test_<name>.c
-# Each executable will be:  bin/test_<name>
+# ================= Main executable =======================================
 
-#TESTS := temporal transverse adk pulse pulse_A multipulse grid_examples \
-#         field_grid ionization mdf mdf_particles inputdeck run
-TESTS := run
-
-TEST_EXES := $(TESTS:%=$(BIN_DIR)/test_%)
+TARGET := $(BIN_DIR)/laserion
 
 # ================= Default target ========================================
 
-all: $(TEST_EXES)
+all: $(TARGET)
 
 # ================= Generic build rules ===================================
 
@@ -103,9 +96,14 @@ $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $(H5_FLAGS) -c $< -o $@
 
-# Link each test executable:
-#   bin/test_<name> = (all library objs) + build/tests/test_<name>.o
-$(BIN_DIR)/test_%: $(LIB_OBJS) $(TOML_OBJ) $(BUILD_DIR)/$(TEST_DIR)/test_%.o
+# Build tomlc99 object
+$(TOML_OBJ): $(TOML_SRC)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
+
+# Link main executable:
+#   bin/laserion = (all library objs, including main.o) + toml.o
+$(TARGET): $(LIB_OBJS) $(TOML_OBJ)
 	@mkdir -p $(BIN_DIR)
 	$(CC) $(CFLAGS) $(H5_FLAGS) $^ -o $@ $(LDFLAGS) $(LDLIBS) $(H5_LINK)
 
@@ -120,4 +118,3 @@ clean:
 	rm -rf $(BUILD_DIR) $(BIN_DIR)
 
 .PHONY: all clean debug
-

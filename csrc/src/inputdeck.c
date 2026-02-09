@@ -1102,7 +1102,7 @@ static void laser_defaults(InputLaserSpec *L)
     L->temporal_type = TEMP_GAUSSIAN;
     L->tau = 30.0;
 
-    L->transverse_type = TRANS_GAUSSIAN;
+    L->transverse_type = TRANS_PLANE;
     L->w0 = 4.0;
     L->zf = 0.0;
 
@@ -1318,6 +1318,11 @@ static int parse_temporal_type(const char *s, TemporalType *out)
 
 static int parse_transverse_type(const char *s, TransverseType *out)
 {
+    if (streqi(s, "plane_wave"))
+    {
+        *out = TRANS_PLANE;
+        return 0;
+    }
     if (streqi(s, "gaussian"))
     {
         *out = TRANS_GAUSSIAN;
@@ -1487,28 +1492,46 @@ static int parse_lasers(toml_table_t *root, InputLaserDeck *deck)
         }
 
         // Jones params (optional)
-        // If any Jones field present, mark has_jones; also if polarization explicitly Jones.
+        // Only activate Jones if polarization="jones".
+        // Jones params (optional) — only used if polarization="jones"
         double tmp;
-        bool any_jones = false;
+        bool have_p1 = false, have_p2 = false, have_delta = false;
+
         if (get_double(tl, "p1", &tmp))
         {
             L.p1 = tmp;
-            any_jones = true;
+            have_p1 = true;
         }
         if (get_double(tl, "p2", &tmp))
         {
             L.p2 = tmp;
-            any_jones = true;
+            have_p2 = true;
         }
         if (get_double(tl, "delta", &tmp))
         {
             L.delta = tmp;
-            any_jones = true;
+            have_delta = true;
         }
 
-        if (L.polarization == POL_JONES || any_jones)
+        L.has_jones = (L.polarization == POL_JONES);
+
+        // If user provides any Jones param but didn't choose Jones polarization → ignore
+        if ((have_p1 || have_p2 || have_delta) && L.polarization != POL_JONES)
         {
-            L.has_jones = true;
+        }
+
+        // If user chose Jones polarization → require ALL three
+        if (L.polarization == POL_JONES && !(have_p1 && have_p2 && have_delta))
+        {
+            fprintf(stderr,
+                    "inputdeck: laser[%d] polarization=\"jones\" requires p1, p2, and delta.\n", i);
+            return 17;
+        }
+
+        if (L.polarization != POL_JONES)
+        {
+            // ignore any_jones parameters (keep defaults already set in laser_defaults)
+            // optionally you could reset L.p1/L.p2/L.delta to defaults here for clarity
         }
 
         // Validation
@@ -1537,11 +1560,7 @@ static int parse_lasers(toml_table_t *root, InputLaserDeck *deck)
             fprintf(stderr, "inputdeck: laser[%d] transverse_type=\"hermite\" requires herm_lm=[l,m]\n", i);
             return 16;
         }
-        if (L.polarization == POL_JONES && !L.has_jones)
-        {
-            fprintf(stderr, "inputdeck: laser[%d] polarization=\"Jones\" requires p1,p2,delta\n", i);
-            return 17;
-        }
+
         if (L.polarization == POL_CIRCULAR && !sen)
         {
             fprintf(stderr, "inputdeck: laser[%d] polarization=\"Circular\" requires sense=\"right\" or \"left\"\n", i);

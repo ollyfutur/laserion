@@ -31,8 +31,9 @@ extern "C"
 
     typedef enum
     {
-        TRANS_GAUSSIAN = 0,
-        TRANS_HERMITE = 1
+        TRANS_PLANE = 0,
+        TRANS_GAUSSIAN = 1,
+        TRANS_HERMITE = 2
     } TransverseType;
 
     typedef enum
