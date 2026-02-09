@@ -7,15 +7,18 @@ BIN_DIR   := bin
 # ================= Compiler ==============================================
 
 ##MPICC := /opt/openmpi/gcc-14.2.0/bin/mpicc
-MPICC := /opt/homebrew/bin/mpicc
-CC    := $(MPICC)
+MPICC ?= mpicc
+CC    ?= $(MPICC)
 
 
 # ================= HDF5 ==================================================
 
-H5_ROOT  := /opt/hdf5/gcc-14.2.0
-H5_FLAGS := -I$(H5_ROOT)/include
-H5_LINK  := -L$(H5_ROOT)/lib -lhdf5 -lz -ldl
+H5CC     ?= h5cc
+H5_ROOT  ?= $(shell $(H5CC) -showconfig 2>/dev/null \
+               | sed -n 's/^[[:space:]]*Installation point:[[:space:]]*//p')
+
+H5_FLAGS ?= -I$(H5_ROOT)/include
+H5_LINK  ?= -L$(H5_ROOT)/lib -lhdf5 -lz -ldl
 
 # ================= TOML (tomlc99) ========================================
 
