@@ -1,6 +1,6 @@
 # laserion
 
-`laserion` is a small Python toolkit for defining laser pulses, polarization states,
+`laserion` is a Python toolkit for defining laser pulses, polarization states,
 and computing momentum distribution functions (MDF) for electrons born by
 tunnel ionization.
 
@@ -19,3 +19,7 @@ Clone the repository and install in editable mode:
 ```bash
 pip install -e .
 ```
+
+# laserion C version
+
+We have implemented the a C version with MPI support
