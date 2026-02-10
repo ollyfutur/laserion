@@ -297,7 +297,8 @@ int mdf_particles_run(const LaserPulse *pulse,
     float *px = (float *)malloc(local_n * sizeof(float));
     float *py = (float *)malloc(local_n * sizeof(float));
     float *pz = (float *)malloc(local_n * sizeof(float));
-    if (!x || !y || !z || !px || !py || !pz)
+    float *q = (float *)malloc(local_n * sizeof(float));
+    if (!x || !y || !z || !px || !py || !pz || !q)
     {
         free(x);
         free(y);
@@ -305,6 +306,7 @@ int mdf_particles_run(const LaserPulse *pulse,
         free(px);
         free(py);
         free(pz);
+        free(q);
         return 100;
     }
 
@@ -458,12 +460,41 @@ int mdf_particles_run(const LaserPulse *pulse,
             const double u = rng_uniform01(&rng) * sum_use;
             const size_t it = sample_index_from_cdf(cdf_use, m_use->N, u);
 
+            /* sample ionization level conditional on the chosen it */
+            double lvl_sum = 0.0;
+            for (size_t l = 0; l < m_use->nZ; ++l)
+            {
+                double wlt = MDF_dP(m_use, l, it);
+                if (wlt > 0.0)
+                    lvl_sum += wlt;
+            }
+
+            size_t lsel = 0;
+            if (lvl_sum > 0.0)
+            {
+                const double ul = rng_uniform01(&rng) * lvl_sum;
+                double acc = 0.0;
+                for (size_t l = 0; l < m_use->nZ; ++l)
+                {
+                    double wlt = MDF_dP(m_use, l, it);
+                    if (wlt < 0.0)
+                        wlt = 0.0;
+                    acc += wlt;
+                    if (acc >= ul)
+                    {
+                        lsel = l;
+                        break;
+                    }
+                }
+            }
+
             x[out_k] = (float)xr;
             y[out_k] = (float)yr;
             z[out_k] = (float)zr;
             px[out_k] = (float)m_use->p[it][0];
             py[out_k] = (float)m_use->p[it][1];
             pz[out_k] = (float)m_use->p[it][2];
+            q[out_k] = (float)m_use->Z_list[lsel];
             ++out_k;
 
             if (opt->mdf_at_particle_position)
@@ -514,6 +545,7 @@ int mdf_particles_run(const LaserPulse *pulse,
 
     /* Handle total==0 safely */
     float *X = NULL, *Y = NULL, *Z = NULL, *PX = NULL, *PY = NULL, *PZ = NULL;
+    float *Q = NULL;
     if (rank == root)
     {
         if (total > 0)
@@ -524,7 +556,8 @@ int mdf_particles_run(const LaserPulse *pulse,
             PX = (float *)malloc((size_t)total * sizeof(float));
             PY = (float *)malloc((size_t)total * sizeof(float));
             PZ = (float *)malloc((size_t)total * sizeof(float));
-            if (!X || !Y || !Z || !PX || !PY || !PZ)
+            Q = (float *)malloc((size_t)total * sizeof(float));
+            if (!X || !Y || !Z || !PX || !PY || !PZ || !Q)
             {
                 free(X);
                 free(Y);
@@ -546,7 +579,7 @@ int mdf_particles_run(const LaserPulse *pulse,
         else
         {
             /* Dummy buffers for MPI implementations that dislike NULL recvbuf */
-            X = Y = Z = PX = PY = PZ = (float *)malloc(1);
+            X = Y = Z = PX = PY = PZ = Q = (float *)malloc(1);
         }
     }
 
@@ -556,6 +589,7 @@ int mdf_particles_run(const LaserPulse *pulse,
     MPI_Gatherv(px, local_count, MPI_FLOAT, PX, counts, displs, MPI_FLOAT, root, comm);
     MPI_Gatherv(py, local_count, MPI_FLOAT, PY, counts, displs, MPI_FLOAT, root, comm);
     MPI_Gatherv(pz, local_count, MPI_FLOAT, PZ, counts, displs, MPI_FLOAT, root, comm);
+    MPI_Gatherv(q, local_count, MPI_FLOAT, Q, counts, displs, MPI_FLOAT, root, comm);
 
     int rcw = 0;
     if (rank == root)
@@ -579,6 +613,7 @@ int mdf_particles_run(const LaserPulse *pulse,
             pdata.px = PX;
             pdata.py = PY;
             pdata.pz = PZ;
+            pdata.q = Q;
 
             char path[4096];
             snprintf(path, sizeof(path), "%s%s", path_prefix, opt->file_suffix);
@@ -925,7 +960,8 @@ int mdf_particles_run_from_cache(const InputSimSpec *sim,
     float *px = (float *)malloc(local_n * sizeof(float));
     float *py = (float *)malloc(local_n * sizeof(float));
     float *pz = (float *)malloc(local_n * sizeof(float));
-    if (!x || !y || !z || !px || !py || !pz)
+    float *q = (float *)malloc(local_n * sizeof(float));
+    if (!x || !y || !z || !px || !py || !pz || !q)
     {
         free(t_fs);
         free(x);
@@ -934,6 +970,7 @@ int mdf_particles_run_from_cache(const InputSimSpec *sim,
         free(px);
         free(py);
         free(pz);
+        free(q);
         return 100;
     }
 
@@ -965,6 +1002,7 @@ int mdf_particles_run_from_cache(const InputSimSpec *sim,
         free(px);
         free(py);
         free(pz);
+        free(q);
         free(Ex);
         free(Ey);
         free(Ez);
@@ -1088,6 +1126,8 @@ int mdf_particles_run_from_cache(const InputSimSpec *sim,
                     py[out_k] = (float)(MDF_CONV_A_TO_P * Ay[it]);
                     pz[out_k] = (float)(MDF_CONV_A_TO_P * Az[it]);
 
+                    q[out_k] = (float)opt->Z_list[l];
+
                     ++out_k;
                 }
             }
@@ -1145,6 +1185,33 @@ int mdf_particles_run_from_cache(const InputSimSpec *sim,
                 const double u = rng_uniform01(&rng) * sum;
                 const size_t it = sample_index_from_cdf(cdf, Nt, u);
 
+                double lvl_sum = 0.0;
+                for (size_t l = 0; l < opt->nZ; ++l)
+                {
+                    double wlt = dP[l * Nt + it];
+                    if (wlt > 0.0)
+                        lvl_sum += wlt;
+                }
+
+                size_t lsel = 0;
+                if (lvl_sum > 0.0)
+                {
+                    const double ul = rng_uniform01(&rng) * lvl_sum;
+                    double acc = 0.0;
+                    for (size_t l = 0; l < opt->nZ; ++l)
+                    {
+                        double wlt = dP[l * Nt + it];
+                        if (wlt < 0.0)
+                            wlt = 0.0;
+                        acc += wlt;
+                        if (acc >= ul)
+                        {
+                            lsel = l;
+                            break;
+                        }
+                    }
+                }
+
                 x[out_k] = (float)xr;
                 y[out_k] = (float)yr;
                 z[out_k] = (float)zr;
@@ -1152,6 +1219,7 @@ int mdf_particles_run_from_cache(const InputSimSpec *sim,
                 px[out_k] = (float)(MDF_CONV_A_TO_P * Ax[it]);
                 py[out_k] = (float)(MDF_CONV_A_TO_P * Ay[it]);
                 pz[out_k] = (float)(MDF_CONV_A_TO_P * Az[it]);
+                q[out_k] = (float)opt->Z_list[lsel];
 
                 ++out_k;
             }
@@ -1190,6 +1258,7 @@ int mdf_particles_run_from_cache(const InputSimSpec *sim,
             free(px);
             free(py);
             free(pz);
+            free(q);
             return 200;
         }
     }
@@ -1207,6 +1276,7 @@ int mdf_particles_run_from_cache(const InputSimSpec *sim,
     }
 
     float *X = NULL, *Y = NULL, *Z = NULL, *PX = NULL, *PY = NULL, *PZ = NULL;
+    float *Q = NULL;
     if (rank == root)
     {
         if (total > 0)
@@ -1217,7 +1287,8 @@ int mdf_particles_run_from_cache(const InputSimSpec *sim,
             PX = (float *)malloc((size_t)total * sizeof(float));
             PY = (float *)malloc((size_t)total * sizeof(float));
             PZ = (float *)malloc((size_t)total * sizeof(float));
-            if (!X || !Y || !Z || !PX || !PY || !PZ)
+            Q = (float *)malloc((size_t)total * sizeof(float));
+            if (!X || !Y || !Z || !PX || !PY || !PZ || !Q)
             {
                 free(X);
                 free(Y);
@@ -1225,6 +1296,7 @@ int mdf_particles_run_from_cache(const InputSimSpec *sim,
                 free(PX);
                 free(PY);
                 free(PZ);
+                free(Q);
                 free(counts);
                 free(displs);
                 free(x);
@@ -1238,7 +1310,7 @@ int mdf_particles_run_from_cache(const InputSimSpec *sim,
         }
         else
         {
-            X = Y = Z = PX = PY = PZ = (float *)malloc(1);
+            X = Y = Z = PX = PY = PZ = Q = (float *)malloc(1);
         }
     }
 
@@ -1248,6 +1320,7 @@ int mdf_particles_run_from_cache(const InputSimSpec *sim,
     MPI_Gatherv(px, local_count, MPI_FLOAT, PX, counts, displs, MPI_FLOAT, root, comm);
     MPI_Gatherv(py, local_count, MPI_FLOAT, PY, counts, displs, MPI_FLOAT, root, comm);
     MPI_Gatherv(pz, local_count, MPI_FLOAT, PZ, counts, displs, MPI_FLOAT, root, comm);
+    MPI_Gatherv(q, local_count, MPI_FLOAT, Q, counts, displs, MPI_FLOAT, root, comm);
 
     int rcw = 0;
     if (rank == root)
@@ -1271,6 +1344,7 @@ int mdf_particles_run_from_cache(const InputSimSpec *sim,
             pdata.px = PX;
             pdata.py = PY;
             pdata.pz = PZ;
+            pdata.q = Q;
 
             char outpath[4096];
             snprintf(outpath, sizeof(outpath), "%s%s", path_prefix, opt->file_suffix);
@@ -1283,6 +1357,7 @@ int mdf_particles_run_from_cache(const InputSimSpec *sim,
         free(PX);
         free(PY);
         free(PZ);
+        free(Q);
         free(counts);
         free(displs);
     }
@@ -1295,6 +1370,7 @@ int mdf_particles_run_from_cache(const InputSimSpec *sim,
     free(px);
     free(py);
     free(pz);
+    free(q);
 
     return rcw;
 }

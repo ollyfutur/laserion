@@ -213,7 +213,10 @@ static int cachecomp_open(CacheComp *cc,
     const size_t ax1_n = (size_t)g->ax1_n;
     const size_t ax2_n = (size_t)g->ax2_n;
 
-    int irc = infer_dim_semantics(cc->rank, cc->dims, t_n, ax1_n, ax2_n, g->has_ax2 ? 1 : 0, cc->dim_sem);
+    int irc = infer_dim_semantics(cc->rank, cc->dims,
+                                  t_n, ax1_n, ax2_n,
+                                  g->has_ax2 ? 1 : 0,
+                                  cc->dim_sem);
     if (irc != 0)
     {
         cachecomp_close(cc);
@@ -231,11 +234,13 @@ static int cachecomp_open(CacheComp *cc,
         return 17;
     }
     if (cc->rank == 3)
+    {
         if (sem_to_k('2', cc->dim_sem, cc->rank, &cc->k_2) != 0)
         {
             cachecomp_close(cc);
             return 18;
         }
+    }
 
     return 0;
 }
@@ -670,15 +675,20 @@ int mdf_diag_run_one_from_cache(const InputSimSpec *sim,
 
     const int n1 = ps->nbins1;
     const int n2 = is2d ? ps->nbins2 : 1;
+
+    /* histograms: slot 0 = total, slot (l+1) = level l */
+    const size_t nslots = nZ + 1;
     const size_t hist_sz = (size_t)n1 * (size_t)n2;
 
-    hist_local = (double *)calloc(hist_sz, sizeof(double));
-    hist_global = (double *)calloc(hist_sz, sizeof(double));
+    hist_local = (double *)calloc(nslots * hist_sz, sizeof(double));
+    hist_global = (double *)calloc(nslots * hist_sz, sizeof(double));
     if (!hist_local || !hist_global)
     {
         rc = 5;
         goto fail;
     }
+
+    double *hist_total_local = &hist_local[0 * hist_sz];
 
     int i1_lo = 0, i1_hi = 0, i2_lo = 0, i2_hi = 0;
     const int has_points = compute_crop_ranges(g, ps, &i1_lo, &i1_hi, &i2_lo, &i2_hi);
@@ -746,7 +756,7 @@ int mdf_diag_run_one_from_cache(const InputSimSpec *sim,
 
     if (!has_points)
     {
-        MPI_Allreduce(hist_local, hist_global, (int)hist_sz, MPI_DOUBLE, MPI_SUM, comm);
+        MPI_Allreduce(hist_local, hist_global, (int)(nslots * hist_sz), MPI_DOUBLE, MPI_SUM, comm);
         goto write_out;
     }
 
@@ -824,10 +834,10 @@ int mdf_diag_run_one_from_cache(const InputSimSpec *sim,
 
                     for (size_t it = 0; it < t_n; ++it)
                     {
-                        const double Ex = (double)ex[it];
-                        const double Ey = (double)ey[it];
-                        const double Ez = (double)ez[it];
-                        Eabs[it] = sqrt(Ex * Ex + Ey * Ey + Ez * Ez);
+                        const double Exv = (double)ex[it];
+                        const double Eyv = (double)ey[it];
+                        const double Ezv = (double)ez[it];
+                        Eabs[it] = sqrt(Exv * Exv + Eyv * Eyv + Ezv * Ezv);
                     }
 
                     if (!passes_envelope_cut(Eabs, t_n, ps->envelope_cut))
@@ -869,9 +879,10 @@ int mdf_diag_run_one_from_cache(const InputSimSpec *sim,
                             if (b1 < 0)
                                 continue;
 
+                            size_t idx = 0;
                             if (!is2d)
                             {
-                                hist_local[(size_t)b1] += wgt;
+                                idx = (size_t)b1;
                             }
                             else
                             {
@@ -879,9 +890,14 @@ int mdf_diag_run_one_from_cache(const InputSimSpec *sim,
                                 const int b2 = clamp_bin(p2, ps->p2min, ps->p2max, n2);
                                 if (b2 < 0)
                                     continue;
-
-                                hist_local[(size_t)b2 * (size_t)n1 + (size_t)b1] += wgt;
+                                idx = (size_t)b2 * (size_t)n1 + (size_t)b1;
                             }
+
+                            /* total */
+                            hist_total_local[idx] += wgt;
+
+                            /* this level (slot l+1) */
+                            hist_local[(l + 1) * hist_sz + idx] += wgt;
                         }
                     }
                 }
@@ -889,16 +905,20 @@ int mdf_diag_run_one_from_cache(const InputSimSpec *sim,
         }
     }
 
-    MPI_Allreduce(hist_local, hist_global, (int)hist_sz, MPI_DOUBLE, MPI_SUM, comm);
+    MPI_Allreduce(hist_local, hist_global, (int)(nslots * hist_sz), MPI_DOUBLE, MPI_SUM, comm);
 
     if (ps->normalize_sum_to_1)
     {
-        double sum = 0.0;
-        for (size_t i = 0; i < hist_sz; ++i)
-            sum += hist_global[i];
-        if (sum > 0.0)
+        for (size_t s = 0; s < nslots; ++s)
+        {
+            double *H = &hist_global[s * hist_sz];
+            double sum = 0.0;
             for (size_t i = 0; i < hist_sz; ++i)
-                hist_global[i] /= sum;
+                sum += H[i];
+            if (sum > 0.0)
+                for (size_t i = 0; i < hist_sz; ++i)
+                    H[i] /= sum;
+        }
     }
 
 write_out:
@@ -908,86 +928,119 @@ write_out:
         char kindbuf[32];
         kind_to_strings(ps->kind, kindbuf, sizeof(kindbuf));
 
-        char dataset[64];
-        snprintf(dataset, sizeof(dataset), "f_%s", kindbuf);
+        char label_base[128];
+        build_label(ps->kind, label_base, sizeof(label_base));
 
-        char label[128];
-        build_label(ps->kind, label, sizeof(label));
+        DiagFixedCoords fixed;
+        fixed.t = 0.0;
+        fixed.x = g->fixed_x;
+        fixed.y = g->fixed_y;
+        fixed.z = g->fixed_z;
 
-        char path[1024];
-        snprintf(path, sizeof(path), "%s/mdf_%03d_%s.h5", out_dir, ps_index, kindbuf);
+        DiagAxis ax1, ax2;
+        ax1.id = comp_to_diag_axis_id(c1);
+        {
+            static char name1[16];
+            snprintf(name1, sizeof(name1), "p_%s", comp_to_str(c1));
+            ax1.long_name = name1;
+        }
+        ax1.units = "m_e c";
+        ax1.vmin = ps->p1min;
+        ax1.vmax = ps->p1max;
+
+        if (is2d)
+        {
+            ax2.id = comp_to_diag_axis_id(c2);
+            {
+                static char name2[16];
+                snprintf(name2, sizeof(name2), "p_%s", comp_to_str(c2));
+                ax2.long_name = name2;
+            }
+            ax2.units = "m_e c";
+            ax2.vmin = ps->p2min;
+            ax2.vmax = ps->p2max;
+        }
 
         float *data_f32 = (float *)malloc(hist_sz * sizeof(float));
         if (!data_f32)
         {
             rc = 30;
+            goto done_writes;
         }
-        else
+
+        /* ---- TOTAL ---- */
         {
+            char dataset[64];
+            snprintf(dataset, sizeof(dataset), "f_%s_total", kindbuf);
+
+            char label[160];
+            snprintf(label, sizeof(label), "%s (total)", label_base);
+
+            char path[1024];
+            snprintf(path, sizeof(path), "%s/mdf_%03d_%s_Z00.h5", out_dir, ps_index, kindbuf);
+
+            const double *H = &hist_global[0 * hist_sz];
             for (size_t i = 0; i < hist_sz; ++i)
-                data_f32[i] = (float)hist_global[i];
-
-            DiagFixedCoords fixed;
-            fixed.t = 0.0;
-            fixed.x = g->fixed_x;
-            fixed.y = g->fixed_y;
-            fixed.z = g->fixed_z;
-
-            DiagAxis ax1, ax2;
-            ax1.id = comp_to_diag_axis_id(c1);
-            {
-                static char name1[16];
-                snprintf(name1, sizeof(name1), "p_%s", comp_to_str(c1));
-                ax1.long_name = name1;
-            }
-            ax1.units = "m_e c";
-            ax1.vmin = ps->p1min;
-            ax1.vmax = ps->p1max;
+                data_f32[i] = (float)H[i];
 
             if (!is2d)
-            {
-                rc = diag_h5_write_grid_1d(path,
-                                           dataset,
-                                           "1",
-                                           label,
-                                           0.0, 0,
-                                           data_f32,
-                                           (size_t)n1,
-                                           &ax1,
-                                           &fixed);
-            }
+                rc = diag_h5_write_grid_1d(path, dataset, "1", label, 0.0, 0,
+                                           data_f32, (size_t)n1, &ax1, &fixed);
             else
-            {
-                ax2.id = comp_to_diag_axis_id(c2);
-                {
-                    static char name2[16];
-                    snprintf(name2, sizeof(name2), "p_%s", comp_to_str(c2));
-                    ax2.long_name = name2;
-                }
-                ax2.units = "m_e c";
-                ax2.vmin = ps->p2min;
-                ax2.vmax = ps->p2max;
+                rc = diag_h5_write_grid_2d(path, dataset, "1", label, 0.0, 0,
+                                           data_f32, (size_t)n1, (size_t)n2, &ax1, &ax2, &fixed);
 
-                rc = diag_h5_write_grid_2d(path,
-                                           dataset,
-                                           "1",
-                                           label,
-                                           0.0, 0,
-                                           data_f32,
-                                           (size_t)n1, (size_t)n2,
-                                           &ax1, &ax2,
-                                           &fixed);
-            }
-
-            free(data_f32);
+            if (rc != 0)
+                goto done_writes;
         }
+
+        /* ---- PER Z ---- */
+        for (size_t l = 0; l < nZ; ++l)
+        {
+            const int Z = Z_list[l];
+
+            const double *H = &hist_global[(l + 1) * hist_sz];
+            double sum = 0.0;
+            for (size_t i = 0; i < hist_sz; ++i)
+                sum += H[i];
+            if (!(sum > 0.0))
+                continue;
+
+            char dataset[64];
+            snprintf(dataset, sizeof(dataset), "f_%s_Z%02d", kindbuf, Z);
+
+            char label[160];
+            snprintf(label, sizeof(label), "%s (Z=%d)", label_base, Z);
+
+            char path[1024];
+            snprintf(path, sizeof(path), "%s/mdf_%03d_%s_Z%02d.h5", out_dir, ps_index, kindbuf, Z);
+
+            for (size_t i = 0; i < hist_sz; ++i)
+                data_f32[i] = (float)H[i];
+
+            int rc2 = 0;
+            if (!is2d)
+                rc2 = diag_h5_write_grid_1d(path, dataset, "1", label, 0.0, Z,
+                                            data_f32, (size_t)n1, &ax1, &fixed);
+            else
+                rc2 = diag_h5_write_grid_2d(path, dataset, "1", label, 0.0, Z,
+                                            data_f32, (size_t)n1, (size_t)n2, &ax1, &ax2, &fixed);
+
+            if (rc2 != 0)
+            {
+                rc = rc2;
+                goto done_writes;
+            }
+        }
+
+    done_writes:
+        free(data_f32);
     }
 
     /* Broadcast rc so all ranks return consistent code */
     MPI_Bcast(&rc, 1, MPI_INT, 0, comm);
 
 fail:
-    /* Free scratch/buffers (free(NULL) is OK). */
     free(Plev);
     free(dP);
     free(S);
@@ -1036,10 +1089,12 @@ int mdf_diag_run_all_from_cache(const InputSimSpec *sim,
         if (one != 0 && rc == 0)
             rc = 100 + one;
     }
+
     int rank = 0;
     MPI_Comm_rank(comm, &rank);
     if (rank == 0)
         printf("\n");
+
     MPI_Barrier(comm);
     return rc;
 }
