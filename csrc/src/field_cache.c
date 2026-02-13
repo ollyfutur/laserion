@@ -1298,6 +1298,391 @@ static int write_rank_files_3d(const InputGridSpec *g,
     return 0;
 }
 
+/* -------------------------- single-rank fast path writers -------------------------- */
+
+static int write_final_files_2d(const InputGridSpec *g,
+                                const LaserPulse *pulse,
+                                const char *prefix,
+                                int compute_A,
+                                const char *cache_config,
+                                const char *cache_key,
+                                int cache_has_A)
+{
+    /* full global dims */
+    const size_t a1_i0 = 0;
+    const size_t a1_nloc = (size_t)g->ax1_n;
+
+    hsize_t dims[2] = {(hsize_t)g->t_n, (hsize_t)a1_nloc};
+
+    hid_t fEx, dEx, fEy, dEy, fEz, dEz;
+    char path[512];
+
+    component_filename(path, sizeof(path), prefix, "Ex", 0, 0);
+    if (create_single_dataset_file(&fEx, &dEx, path, "Ex", 2, dims, g,
+                                   /*is_rank_file=*/0, 0, 0,
+                                   cache_config, cache_key, cache_has_A) != 0)
+        return 1;
+
+    component_filename(path, sizeof(path), prefix, "Ey", 0, 0);
+    if (create_single_dataset_file(&fEy, &dEy, path, "Ey", 2, dims, g,
+                                   /*is_rank_file=*/0, 0, 0,
+                                   cache_config, cache_key, cache_has_A) != 0)
+        return 2;
+
+    component_filename(path, sizeof(path), prefix, "Ez", 0, 0);
+    if (create_single_dataset_file(&fEz, &dEz, path, "Ez", 2, dims, g,
+                                   /*is_rank_file=*/0, 0, 0,
+                                   cache_config, cache_key, cache_has_A) != 0)
+        return 3;
+
+    hid_t fAx = -1, dAx = -1, fAy = -1, dAy = -1, fAz = -1, dAz = -1;
+    if (compute_A)
+    {
+        component_filename(path, sizeof(path), prefix, "Ax", 0, 0);
+        if (create_single_dataset_file(&fAx, &dAx, path, "Ax", 2, dims, g,
+                                       /*is_rank_file=*/0, 0, 0,
+                                       cache_config, cache_key, cache_has_A) != 0)
+            return 4;
+
+        component_filename(path, sizeof(path), prefix, "Ay", 0, 0);
+        if (create_single_dataset_file(&fAy, &dAy, path, "Ay", 2, dims, g,
+                                       /*is_rank_file=*/0, 0, 0,
+                                       cache_config, cache_key, cache_has_A) != 0)
+            return 5;
+
+        component_filename(path, sizeof(path), prefix, "Az", 0, 0);
+        if (create_single_dataset_file(&fAz, &dAz, path, "Az", 2, dims, g,
+                                       /*is_rank_file=*/0, 0, 0,
+                                       cache_config, cache_key, cache_has_A) != 0)
+            return 6;
+    }
+
+    double *bx = (double *)calloc(a1_nloc, sizeof(double));
+    double *by = (double *)calloc(a1_nloc, sizeof(double));
+    double *bz = (double *)calloc(a1_nloc, sizeof(double));
+    double *bax = compute_A ? (double *)calloc(a1_nloc, sizeof(double)) : NULL;
+    double *bay = compute_A ? (double *)calloc(a1_nloc, sizeof(double)) : NULL;
+    double *baz = compute_A ? (double *)calloc(a1_nloc, sizeof(double)) : NULL;
+    double *bx_prev = compute_A ? (double *)calloc(a1_nloc, sizeof(double)) : NULL;
+    double *by_prev = compute_A ? (double *)calloc(a1_nloc, sizeof(double)) : NULL;
+    double *bz_prev = compute_A ? (double *)calloc(a1_nloc, sizeof(double)) : NULL;
+
+    if (!bx || !by || !bz || (compute_A && (!bax || !bay || !baz || !bx_prev || !by_prev || !bz_prev)))
+        return 7;
+
+    for (int it = 0; it < g->t_n; ++it)
+    {
+        const double t = g->t_min + (double)it * g->dt;
+
+        for (size_t ia = 0; ia < a1_nloc; ++ia)
+        {
+            const size_t ig = a1_i0 + ia;
+            const double a1 = g->ax1_min + (double)ig * g->dx1;
+
+            double r[3];
+            set_r_from_axes(g, a1, 0.0, r);
+
+            double E[3];
+            LaserPulse_E(pulse, t, r, E);
+
+            bx[ia] = E[0];
+            by[ia] = E[1];
+            bz[ia] = E[2];
+        }
+
+        if (compute_A)
+        {
+            if (it == 0)
+            {
+                for (size_t ia = 0; ia < a1_nloc; ++ia)
+                {
+                    bax[ia] = bay[ia] = baz[ia] = 0.0;
+                    bx_prev[ia] = bx[ia];
+                    by_prev[ia] = by[ia];
+                    bz_prev[ia] = bz[ia];
+                }
+            }
+            else
+            {
+                const double dt = g->dt;
+                for (size_t ia = 0; ia < a1_nloc; ++ia)
+                {
+                    bax[ia] -= 0.5 * (bx_prev[ia] + bx[ia]) * dt;
+                    bay[ia] -= 0.5 * (by_prev[ia] + by[ia]) * dt;
+                    baz[ia] -= 0.5 * (bz_prev[ia] + bz[ia]) * dt;
+
+                    bx_prev[ia] = bx[ia];
+                    by_prev[ia] = by[ia];
+                    bz_prev[ia] = bz[ia];
+                }
+            }
+        }
+
+        hsize_t start[2] = {(hsize_t)it, 0};
+        hsize_t count[2] = {1, (hsize_t)a1_nloc};
+        hid_t mspace = H5Screate_simple(2, count, NULL);
+
+        hid_t fspace = H5Dget_space(dEx);
+        H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start, NULL, count, NULL);
+        H5Dwrite(dEx, H5T_NATIVE_DOUBLE, mspace, fspace, H5P_DEFAULT, bx);
+        H5Sclose(fspace);
+
+        fspace = H5Dget_space(dEy);
+        H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start, NULL, count, NULL);
+        H5Dwrite(dEy, H5T_NATIVE_DOUBLE, mspace, fspace, H5P_DEFAULT, by);
+        H5Sclose(fspace);
+
+        fspace = H5Dget_space(dEz);
+        H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start, NULL, count, NULL);
+        H5Dwrite(dEz, H5T_NATIVE_DOUBLE, mspace, fspace, H5P_DEFAULT, bz);
+        H5Sclose(fspace);
+
+        if (compute_A)
+        {
+            fspace = H5Dget_space(dAx);
+            H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start, NULL, count, NULL);
+            H5Dwrite(dAx, H5T_NATIVE_DOUBLE, mspace, fspace, H5P_DEFAULT, bax);
+            H5Sclose(fspace);
+
+            fspace = H5Dget_space(dAy);
+            H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start, NULL, count, NULL);
+            H5Dwrite(dAy, H5T_NATIVE_DOUBLE, mspace, fspace, H5P_DEFAULT, bay);
+            H5Sclose(fspace);
+
+            fspace = H5Dget_space(dAz);
+            H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start, NULL, count, NULL);
+            H5Dwrite(dAz, H5T_NATIVE_DOUBLE, mspace, fspace, H5P_DEFAULT, baz);
+            H5Sclose(fspace);
+        }
+
+        H5Sclose(mspace);
+    }
+
+    free(bx);
+    free(by);
+    free(bz);
+    free(bax);
+    free(bay);
+    free(baz);
+    free(bx_prev);
+    free(by_prev);
+    free(bz_prev);
+
+    H5Dclose(dEx);
+    H5Fclose(fEx);
+    H5Dclose(dEy);
+    H5Fclose(fEy);
+    H5Dclose(dEz);
+    H5Fclose(fEz);
+
+    if (compute_A)
+    {
+        H5Dclose(dAx);
+        H5Fclose(fAx);
+        H5Dclose(dAy);
+        H5Fclose(fAy);
+        H5Dclose(dAz);
+        H5Fclose(fAz);
+    }
+
+    return 0;
+}
+
+static int write_final_files_3d(const InputGridSpec *g,
+                                const LaserPulse *pulse,
+                                const char *prefix,
+                                int compute_A,
+                                const char *cache_config,
+                                const char *cache_key,
+                                int cache_has_A)
+{
+    const size_t a2_i0 = 0;
+    const size_t a2_nloc = (size_t)g->ax2_n;
+
+    hsize_t dims[3] = {(hsize_t)g->t_n, (hsize_t)g->ax1_n, (hsize_t)a2_nloc};
+
+    hid_t fEx, dEx, fEy, dEy, fEz, dEz;
+    char path[512];
+
+    component_filename(path, sizeof(path), prefix, "Ex", 0, 0);
+    if (create_single_dataset_file(&fEx, &dEx, path, "Ex", 3, dims, g,
+                                   /*is_rank_file=*/0, 0, 0,
+                                   cache_config, cache_key, cache_has_A) != 0)
+        return 1;
+
+    component_filename(path, sizeof(path), prefix, "Ey", 0, 0);
+    if (create_single_dataset_file(&fEy, &dEy, path, "Ey", 3, dims, g,
+                                   /*is_rank_file=*/0, 0, 0,
+                                   cache_config, cache_key, cache_has_A) != 0)
+        return 2;
+
+    component_filename(path, sizeof(path), prefix, "Ez", 0, 0);
+    if (create_single_dataset_file(&fEz, &dEz, path, "Ez", 3, dims, g,
+                                   /*is_rank_file=*/0, 0, 0,
+                                   cache_config, cache_key, cache_has_A) != 0)
+        return 3;
+
+    hid_t fAx = -1, dAx = -1, fAy = -1, dAy = -1, fAz = -1, dAz = -1;
+    if (compute_A)
+    {
+        component_filename(path, sizeof(path), prefix, "Ax", 0, 0);
+        if (create_single_dataset_file(&fAx, &dAx, path, "Ax", 3, dims, g,
+                                       /*is_rank_file=*/0, 0, 0,
+                                       cache_config, cache_key, cache_has_A) != 0)
+            return 4;
+
+        component_filename(path, sizeof(path), prefix, "Ay", 0, 0);
+        if (create_single_dataset_file(&fAy, &dAy, path, "Ay", 3, dims, g,
+                                       /*is_rank_file=*/0, 0, 0,
+                                       cache_config, cache_key, cache_has_A) != 0)
+            return 5;
+
+        component_filename(path, sizeof(path), prefix, "Az", 0, 0);
+        if (create_single_dataset_file(&fAz, &dAz, path, "Az", 3, dims, g,
+                                       /*is_rank_file=*/0, 0, 0,
+                                       cache_config, cache_key, cache_has_A) != 0)
+            return 6;
+    }
+
+    size_t plane = (size_t)g->ax1_n * (size_t)a2_nloc;
+
+    double *Ex = (double *)calloc(plane, sizeof(double));
+    double *Ey = (double *)calloc(plane, sizeof(double));
+    double *Ez = (double *)calloc(plane, sizeof(double));
+    double *Ax = compute_A ? (double *)calloc(plane, sizeof(double)) : NULL;
+    double *Ay = compute_A ? (double *)calloc(plane, sizeof(double)) : NULL;
+    double *Az = compute_A ? (double *)calloc(plane, sizeof(double)) : NULL;
+    double *Ex_prev = compute_A ? (double *)calloc(plane, sizeof(double)) : NULL;
+    double *Ey_prev = compute_A ? (double *)calloc(plane, sizeof(double)) : NULL;
+    double *Ez_prev = compute_A ? (double *)calloc(plane, sizeof(double)) : NULL;
+
+    if (!Ex || !Ey || !Ez || (compute_A && (!Ax || !Ay || !Az || !Ex_prev || !Ey_prev || !Ez_prev)))
+        return 7;
+
+    for (int it = 0; it < g->t_n; ++it)
+    {
+        double t = g->t_min + (double)it * g->dt;
+
+        for (int i1 = 0; i1 < g->ax1_n; ++i1)
+        {
+            double a1 = g->ax1_min + (double)i1 * g->dx1;
+
+            for (size_t jloc = 0; jloc < a2_nloc; ++jloc)
+            {
+                size_t jg = a2_i0 + jloc;
+                double a2 = g->ax2_min + (double)jg * g->dx2;
+
+                double r[3];
+                set_r_from_axes(g, a1, a2, r);
+
+                double E[3];
+                LaserPulse_E(pulse, t, r, E);
+
+                size_t idx = (size_t)i1 * a2_nloc + jloc;
+                Ex[idx] = E[0];
+                Ey[idx] = E[1];
+                Ez[idx] = E[2];
+            }
+        }
+
+        if (compute_A)
+        {
+            if (it == 0)
+            {
+                for (size_t k = 0; k < plane; ++k)
+                {
+                    Ax[k] = Ay[k] = Az[k] = 0.0;
+                    Ex_prev[k] = Ex[k];
+                    Ey_prev[k] = Ey[k];
+                    Ez_prev[k] = Ez[k];
+                }
+            }
+            else
+            {
+                const double dt = g->dt;
+                for (size_t k = 0; k < plane; ++k)
+                {
+                    Ax[k] -= 0.5 * (Ex_prev[k] + Ex[k]) * dt;
+                    Ay[k] -= 0.5 * (Ey_prev[k] + Ey[k]) * dt;
+                    Az[k] -= 0.5 * (Ez_prev[k] + Ez[k]) * dt;
+
+                    Ex_prev[k] = Ex[k];
+                    Ey_prev[k] = Ey[k];
+                    Ez_prev[k] = Ez[k];
+                }
+            }
+        }
+
+        hsize_t start[3] = {(hsize_t)it, 0, 0};
+        hsize_t count[3] = {1, (hsize_t)g->ax1_n, (hsize_t)a2_nloc};
+        hid_t mspace = H5Screate_simple(3, count, NULL);
+
+        hid_t fspace = H5Dget_space(dEx);
+        H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start, NULL, count, NULL);
+        H5Dwrite(dEx, H5T_NATIVE_DOUBLE, mspace, fspace, H5P_DEFAULT, Ex);
+        H5Sclose(fspace);
+
+        fspace = H5Dget_space(dEy);
+        H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start, NULL, count, NULL);
+        H5Dwrite(dEy, H5T_NATIVE_DOUBLE, mspace, fspace, H5P_DEFAULT, Ey);
+        H5Sclose(fspace);
+
+        fspace = H5Dget_space(dEz);
+        H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start, NULL, count, NULL);
+        H5Dwrite(dEz, H5T_NATIVE_DOUBLE, mspace, fspace, H5P_DEFAULT, Ez);
+        H5Sclose(fspace);
+
+        if (compute_A)
+        {
+            fspace = H5Dget_space(dAx);
+            H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start, NULL, count, NULL);
+            H5Dwrite(dAx, H5T_NATIVE_DOUBLE, mspace, fspace, H5P_DEFAULT, Ax);
+            H5Sclose(fspace);
+
+            fspace = H5Dget_space(dAy);
+            H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start, NULL, count, NULL);
+            H5Dwrite(dAy, H5T_NATIVE_DOUBLE, mspace, fspace, H5P_DEFAULT, Ay);
+            H5Sclose(fspace);
+
+            fspace = H5Dget_space(dAz);
+            H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start, NULL, count, NULL);
+            H5Dwrite(dAz, H5T_NATIVE_DOUBLE, mspace, fspace, H5P_DEFAULT, Az);
+            H5Sclose(fspace);
+        }
+
+        H5Sclose(mspace);
+    }
+
+    free(Ex);
+    free(Ey);
+    free(Ez);
+    free(Ax);
+    free(Ay);
+    free(Az);
+    free(Ex_prev);
+    free(Ey_prev);
+    free(Ez_prev);
+
+    H5Dclose(dEx);
+    H5Fclose(fEx);
+    H5Dclose(dEy);
+    H5Fclose(fEy);
+    H5Dclose(dEz);
+    H5Fclose(fEz);
+
+    if (compute_A)
+    {
+        H5Dclose(dAx);
+        H5Fclose(fAx);
+        H5Dclose(dAy);
+        H5Fclose(fAy);
+        H5Dclose(dAz);
+        H5Fclose(fAz);
+    }
+
+    return 0;
+}
+
 /* -------------------------- merge helpers -------------------------- */
 
 static int merge_component_2d(const InputGridSpec *g, const char *prefix,
@@ -1722,6 +2107,29 @@ int field_cache_run(const InputSimSpec *sim,
 
     status_rootf(comm, opt.root_rank, "field_cache: ranks=%d, output prefix=\"%s\"", nr, prefix);
     status_rootf(comm, opt.root_rank, "field_cache: CACHE_KEY=%s", cache_key);
+
+    /* ------------------ single-rank fast path: write final files directly ------------------ */
+    if (nr == 1)
+    {
+        status_root(comm, opt.root_rank,
+                    "field_cache: single-rank mode — writing final cache files directly (no merge)");
+
+        int rcf = 0;
+        if (!g->has_ax2)
+            rcf = write_final_files_2d(g, pulse, prefix, opt.compute_A, cache_config, cache_key, opt.compute_A);
+        else
+            rcf = write_final_files_3d(g, pulse, prefix, opt.compute_A, cache_config, cache_key, opt.compute_A);
+
+        if (rcf != 0)
+        {
+            die_root(comm, opt.root_rank, "field_cache: single-rank write failed");
+            free(cache_config);
+            return 60 + rcf;
+        }
+
+        free(cache_config);
+        return 0;
+    }
 
     int rc = 0;
 
