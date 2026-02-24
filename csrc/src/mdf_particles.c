@@ -565,6 +565,7 @@ int mdf_particles_run(const LaserPulse *pulse,
                 free(PX);
                 free(PY);
                 free(PZ);
+                free(Q);
                 free(counts);
                 free(displs);
                 free(x);
@@ -579,7 +580,19 @@ int mdf_particles_run(const LaserPulse *pulse,
         else
         {
             /* Dummy buffers for MPI implementations that dislike NULL recvbuf */
-            X = Y = Z = PX = PY = PZ = Q = (float *)malloc(1);
+            X = Y = Z = PX = PY = PZ = Q = (float *)malloc(sizeof(float));
+            if (!X)
+            { /* malloc failed */
+                free(counts);
+                free(displs);
+                free(x);
+                free(y);
+                free(z);
+                free(px);
+                free(py);
+                free(pz);
+                return 201;
+            }
         }
     }
 
@@ -645,7 +658,7 @@ int mdf_particles_run(const LaserPulse *pulse,
 
 /* ---------------- HDF5 cache helpers ---------------- */
 
-static int h5_find_first_dataset(hid_t file, char name_out[128])
+static int h5_find_first_dataset(hid_t file, char name_out[256])
 {
     H5G_info_t gi;
     if (H5Gget_info(file, &gi) < 0)
@@ -665,7 +678,8 @@ static int h5_find_first_dataset(hid_t file, char name_out[128])
 
         if (oi.type == H5O_TYPE_DATASET)
         {
-            snprintf(name_out, 128, "%s", nm);
+            /* nm is at most 255 chars (+NUL), name_out is 256 => no truncation */
+            snprintf(name_out, sizeof(char) * 256, "%s", nm); /* or just sizeof(name_out) */
             return 0;
         }
     }
@@ -689,7 +703,7 @@ static int h5_open_component_dataset(const char *path,
 
     if (d < 0)
     {
-        char first[128];
+        char first[256];
         if (h5_find_first_dataset(f, first) != 0)
         {
             H5Fclose(f);
@@ -1310,7 +1324,20 @@ int mdf_particles_run_from_cache(const InputSimSpec *sim,
         }
         else
         {
-            X = Y = Z = PX = PY = PZ = Q = (float *)malloc(1);
+            /* Dummy buffers for MPI implementations that dislike NULL recvbuf */
+            X = Y = Z = PX = PY = PZ = Q = (float *)malloc(sizeof(float));
+            if (!X)
+            { /* malloc failed */
+                free(counts);
+                free(displs);
+                free(x);
+                free(y);
+                free(z);
+                free(px);
+                free(py);
+                free(pz);
+                return 201;
+            }
         }
     }
 
