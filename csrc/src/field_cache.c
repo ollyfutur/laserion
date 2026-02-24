@@ -1,4 +1,22 @@
-/* field_cache.c */
+/* field_cache.c — parallel-HDF5 implementation (no per-rank files, no merge)
+ *
+ * Behaviour:
+ *  - nranks == 1: serial HDF5, write final component files directly.
+ *  - nranks  > 1: REQUIRE parallel HDF5; write final component files collectively using MPI-IO.
+ *                Each rank writes its own spatial slab hyperslab; time is buffered in blocks.
+ *
+ * Output naming (unchanged):
+ *   <prefix>/Ex.h5, Ey.h5, Ez.h5, (Ax/Ay/Az if compute_A)
+ *
+ * Notes:
+ *  - FieldCacheOptions.merge_on_root is ignored when nranks>1 (kept for API compatibility).
+ *  - Uses collective dataset writes (H5FD_MPIO_COLLECTIVE) by default.
+ *
+ * MODIFICATION (requested):
+ *  - Removed HDF5 chunking for cache datasets: datasets are created CONTIGUOUS (no H5Pset_chunk).
+ *    Time blocking (t_chunk) is still used only for in-memory buffering.
+ *  - We keep a dataset-create property list to disable fill and delay allocation where possible.
+ */
 
 #include "field_cache.h"
 
@@ -12,6 +30,50 @@
 #include <hdf5.h>
 #include <unistd.h>
 #include <inttypes.h>
+
+#ifdef H5_HAVE_PARALLEL
+#include <H5FDmpio.h>
+#endif
+
+/* -------------------------- timing helpers -------------------------- */
+
+static double now_s(MPI_Comm comm)
+{
+    (void)comm;
+    return MPI_Wtime();
+}
+
+/* Gather min/max/avg and print on root */
+static void report_time_stats(MPI_Comm comm, int root,
+                              const char *label, double t_local)
+{
+    int rank = 0, nr = 1;
+    MPI_Comm_rank(comm, &rank);
+    MPI_Comm_size(comm, &nr);
+
+    if (nr == 1)
+    {
+        if (rank == root)
+        {
+            printf("field_cache: timing: %s: %.6f s (serial)\n", label, t_local);
+            fflush(stdout);
+        }
+        return;
+    }
+
+    double t_min = 0.0, t_max = 0.0, t_sum = 0.0;
+    MPI_Reduce(&t_local, &t_min, 1, MPI_DOUBLE, MPI_MIN, root, comm);
+    MPI_Reduce(&t_local, &t_max, 1, MPI_DOUBLE, MPI_MAX, root, comm);
+    MPI_Reduce(&t_local, &t_sum, 1, MPI_DOUBLE, MPI_SUM, root, comm);
+
+    if (rank == root)
+    {
+        double t_avg = t_sum / (double)nr;
+        printf("field_cache: timing: %s: min=%.6f s  avg=%.6f s  max=%.6f s  (nranks=%d)\n",
+               label, t_min, t_avg, t_max, nr);
+        fflush(stdout);
+    }
+}
 
 /* -------------------------- small status helpers -------------------------- */
 
@@ -90,8 +152,9 @@ FieldCacheOptions field_cache_default_options(void)
 {
     FieldCacheOptions o;
     o.compute_A = 1;
-    o.merge_on_root = 1;
+    o.merge_on_root = 1; /* kept for API compatibility; ignored in MPI+parallel-HDF5 mode */
     o.root_rank = 0;
+    o.io_buffer_bytes = 4ULL * 1024ULL * 1024ULL * 1024ULL; /* 4 GiB total budget */
     return o;
 }
 
@@ -131,7 +194,6 @@ static void set_r_from_axes(const InputGridSpec *g,
     case AXIS_Z:
         r_um[2] = a1;
         break;
-    case AXIS_INVALID:
     default:
         fprintf(stderr, "field_cache: invalid axis in grid spec\n");
         break;
@@ -150,7 +212,6 @@ static void set_r_from_axes(const InputGridSpec *g,
         case AXIS_Z:
             r_um[2] = a2;
             break;
-        case AXIS_INVALID:
         default:
             fprintf(stderr, "field_cache: invalid axis in grid spec\n");
             break;
@@ -164,37 +225,29 @@ static void decompose_1d(size_t n, int rank, int nranks, size_t *i0, size_t *nlo
     size_t rem = n % (size_t)nranks;
 
     size_t start = (size_t)rank * base + ((rank < (int)rem) ? (size_t)rank : rem);
-
     size_t count = base + (size_t)((rank < (int)rem) ? 1 : 0);
 
     *i0 = start;
     *nloc = count;
 }
 
-/* -------------------------- HDF5 open/create -------------------------- */
-
-static hid_t h5_create_or_fail(const char *path)
-{
-    return H5Fcreate(path, H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
-}
-
-static hid_t h5_open_ro_or_fail(const char *path)
-{
-    return H5Fopen(path, H5F_ACC_RDONLY, H5P_DEFAULT);
-}
-
-/* -------------------------- simple attribute writers -------------------------- */
+/* -------------------------- attributes (same as before) -------------------------- */
 
 static int h5_write_attr_string(hid_t obj, const char *name, const char *value)
 {
     if (!value)
         value = "";
 
+    /* HDF5 fixed-length strings cannot have size 0 */
+    size_t n = strlen(value);
+    if (n == 0)
+        n = 1;
+
     hid_t atype = H5Tcopy(H5T_C_S1);
     if (atype < 0)
         return 1;
 
-    if (H5Tset_size(atype, strlen(value)) < 0)
+    if (H5Tset_size(atype, n) < 0)
     {
         H5Tclose(atype);
         return 2;
@@ -263,7 +316,7 @@ static int h5_write_attr_int(hid_t obj, const char *name, int v)
     return (st < 0) ? 3 : 0;
 }
 
-/* --- OSIRIS-style attribute helpers (1-element arrays and string arrays) --- */
+/* OSIRIS-style attribute helpers */
 static int h5_write_attr_str_array(hid_t obj, const char *name, int n, const char *const *vals)
 {
     hid_t dtype = H5Tcopy(H5T_C_S1);
@@ -599,13 +652,10 @@ oom:
 
 static void component_filename(char *buf, size_t bufsz,
                                const char *cache_dir,
-                               const char *comp, int rank, int is_rank)
+                               const char *comp)
 {
     char fname[128];
-    if (is_rank)
-        snprintf(fname, sizeof(fname), "%s.rank%04d.h5", comp, rank);
-    else
-        snprintf(fname, sizeof(fname), "%s.h5", comp);
+    snprintf(fname, sizeof(fname), "%s.h5", comp);
 
     size_t dir_len = strlen(cache_dir);
     int need_slash = (dir_len > 0 && cache_dir[dir_len - 1] != '/');
@@ -683,131 +733,217 @@ static int osiris_write_axis_dataset(hid_t axis_group, int idx1, const char *nam
     return 0;
 }
 
-/* -------------------------- file creation (single dataset) -------------------------- */
+/* -------------------------- buffering policy -------------------------- */
+
+/* Per-rank effective budget:
+   - serial: full opt_total
+   - MPI: divide total across ranks so total memory stays ~constant
+   Also enforce a small floor so we never get chunk=0. */
+static uint64_t per_rank_budget_bytes(uint64_t opt_total, int nranks)
+{
+    const uint64_t floor_bytes = 32ULL * 1024ULL * 1024ULL; /* 32 MiB */
+    if (nranks <= 1)
+        return (opt_total < floor_bytes) ? floor_bytes : opt_total;
+
+    uint64_t b = opt_total / (uint64_t)nranks;
+    if (b < floor_bytes)
+        b = floor_bytes;
+    return b;
+}
+
+/* Compute t-chunk such that ncomp * t_chunk * plane * sizeof(double) <= budget.
+   NOTE: This now controls ONLY the in-memory time blocking, not HDF5 chunking. */
+static size_t choose_t_chunk(uint64_t budget_bytes, int ncomp, size_t plane, int t_n)
+{
+    if (plane == 0 || ncomp <= 0)
+        return 1;
+
+    uint64_t denom = (uint64_t)ncomp * (uint64_t)plane * (uint64_t)sizeof(double);
+    if (denom == 0)
+        return 1;
+
+    uint64_t tc = budget_bytes / denom;
+    if (tc < 1)
+        tc = 1;
+    if (tc > (uint64_t)t_n)
+        tc = (uint64_t)t_n;
+
+    const uint64_t hard_cap = 16384ULL;
+    if (tc > hard_cap)
+        tc = hard_cap;
+
+    return (size_t)tc;
+}
+
+/* -------------------------- HDF5 file create (serial/parallel) -------------------------- */
+
+static hid_t h5_create_trunc_serial(const char *path)
+{
+    return H5Fcreate(path, H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+}
+
+static hid_t h5_open_ro_serial(const char *path)
+{
+    return H5Fopen(path, H5F_ACC_RDONLY, H5P_DEFAULT);
+}
+
+#ifdef H5_HAVE_PARALLEL
+static hid_t h5_create_trunc_parallel(const char *path, MPI_Comm comm)
+{
+    hid_t fapl = H5Pcreate(H5P_FILE_ACCESS);
+    if (fapl < 0)
+        return -1;
+
+    if (H5Pset_fapl_mpio(fapl, comm, MPI_INFO_NULL) < 0)
+    {
+        H5Pclose(fapl);
+        return -2;
+    }
+
+    hid_t f = H5Fcreate(path, H5F_ACC_TRUNC, H5P_DEFAULT, fapl);
+    H5Pclose(fapl);
+    return f;
+}
+#endif
+
+/* -------------------------- dataset+file creation (single dataset) -------------------------- */
 
 static int create_single_dataset_file(hid_t *out_f, hid_t *out_dset,
                                       const char *path,
                                       const char *component_name,
                                       int nd, const hsize_t *dims,
                                       const InputGridSpec *g,
-                                      int is_rank_file,
-                                      int ax_i0, int ax_nloc,
                                       const char *cache_config,
                                       const char *cache_key,
-                                      int cache_has_A)
+                                      int cache_has_A,
+                                      size_t t_chunk_for_hdf5,
+                                      int use_parallel_hdf5,
+                                      MPI_Comm comm)
 {
-    hid_t f = h5_create_or_fail(path);
+    (void)t_chunk_for_hdf5; /* now used only for in-memory blocking, not dataset layout */
+
+    hid_t f = -1;
+
+    if (!use_parallel_hdf5)
+    {
+        f = h5_create_trunc_serial(path);
+    }
+    else
+    {
+#ifdef H5_HAVE_PARALLEL
+        f = h5_create_trunc_parallel(path, comm);
+#else
+        (void)comm;
+        return 1001;
+#endif
+    }
+
     if (f < 0)
         return 1;
 
-    /* --- OSIRIS-compatible structure (AXIS + SIMULATION + root attrs) --- */
+    /* OSIRIS-like attrs + groups (written by all ranks; identical) */
+    h5_write_attr_string1(f, "TYPE", "grid");
+    h5_write_attr_string1(f, "NAME", component_name);
+    h5_write_attr_string1(f, "LABEL", component_name);
+
+    if (component_name && component_name[0] == 'E')
+        h5_write_attr_string1(f, "UNITS", "GV/m");
+    else if (component_name && component_name[0] == 'A')
+        h5_write_attr_string1(f, "UNITS", "GV/m fs");
+    else
+        h5_write_attr_string1(f, "UNITS", "a.u.");
+
+    h5_write_attr_int1(f, "ITER", 0);
+    h5_write_attr_double1(f, "TIME", 0.0);
+    h5_write_attr_string1(f, "TIME UNITS", "fs");
+    h5_write_attr_double1(f, "OFFSET_T", 0.0);
+
     {
-        h5_write_attr_string1(f, "TYPE", "grid");
-        h5_write_attr_string1(f, "NAME", component_name);
-        h5_write_attr_string1(f, "LABEL", component_name);
+        double offx[3] = {0.0, 0.0, 0.0};
+        h5_write_attr_double_array(f, "OFFSET_X", nd, offx);
+    }
 
-        if (component_name && component_name[0] == 'E')
-            h5_write_attr_string1(f, "UNITS", "GV/m");
-        else if (component_name && component_name[0] == 'A')
-            h5_write_attr_string1(f, "UNITS", "GV/m fs");
-        else
-            h5_write_attr_string1(f, "UNITS", "a.u.");
-
-        h5_write_attr_int1(f, "ITER", 0);
-        h5_write_attr_double1(f, "TIME", 0.0);
-        h5_write_attr_string1(f, "TIME UNITS", "fs");
-        h5_write_attr_double1(f, "OFFSET_T", 0.0);
-
+    hid_t g_axis = H5Gcreate2(f, "AXIS", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    if (g_axis >= 0)
+    {
+        if (nd == 2)
         {
-            double offx[3] = {0.0, 0.0, 0.0};
-            h5_write_attr_double_array(f, "OFFSET_X", nd, offx);
+            osiris_write_axis_dataset(g_axis, 1,
+                                      axis_name_osiris(g->ax1), axis_long_name_osiris(g->ax1),
+                                      "\\mu m", g->ax1_min, g->ax1_max);
+
+            osiris_write_axis_dataset(g_axis, 2, "t", "t", "fs", g->t_min, g->t_max);
         }
-
-        hid_t g_axis = H5Gcreate2(f, "AXIS", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-        if (g_axis >= 0)
+        else
         {
+            osiris_write_axis_dataset(g_axis, 1,
+                                      axis_name_osiris(g->ax2), axis_long_name_osiris(g->ax2),
+                                      "\\mu m", g->ax2_min, g->ax2_max);
+
+            osiris_write_axis_dataset(g_axis, 2,
+                                      axis_name_osiris(g->ax1), axis_long_name_osiris(g->ax1),
+                                      "\\mu m", g->ax1_min, g->ax1_max);
+
+            osiris_write_axis_dataset(g_axis, 3, "t", "t", "fs", g->t_min, g->t_max);
+        }
+        H5Gclose(g_axis);
+    }
+
+    hid_t g_sim = H5Gcreate2(f, "SIMULATION", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+    if (g_sim >= 0)
+    {
+        int ndims_arr[1] = {nd};
+        h5_write_attr_int_array(g_sim, "NDIMS", 1, ndims_arr);
+
+        {
+            int nx[3] = {0, 0, 0};
             if (nd == 2)
             {
-                osiris_write_axis_dataset(g_axis, 1,
-                                          axis_name_osiris(g->ax1), axis_long_name_osiris(g->ax1),
-                                          "\\mu m", g->ax1_min, g->ax1_max);
-
-                osiris_write_axis_dataset(g_axis, 2, "t", "t", "fs", g->t_min, g->t_max);
+                nx[0] = (int)dims[1];
+                nx[1] = (int)dims[0];
             }
             else
             {
-                osiris_write_axis_dataset(g_axis, 1,
-                                          axis_name_osiris(g->ax2), axis_long_name_osiris(g->ax2),
-                                          "\\mu m", g->ax2_min, g->ax2_max);
-
-                osiris_write_axis_dataset(g_axis, 2,
-                                          axis_name_osiris(g->ax1), axis_long_name_osiris(g->ax1),
-                                          "\\mu m", g->ax1_min, g->ax1_max);
-
-                osiris_write_axis_dataset(g_axis, 3, "t", "t", "fs", g->t_min, g->t_max);
+                nx[0] = (int)dims[2];
+                nx[1] = (int)dims[1];
+                nx[2] = (int)dims[0];
             }
-
-            H5Gclose(g_axis);
+            h5_write_attr_int_array(g_sim, "NX", nd, nx);
         }
 
-        hid_t g_sim = H5Gcreate2(f, "SIMULATION", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
-        if (g_sim >= 0)
         {
-            int ndims_arr[1] = {nd};
-            h5_write_attr_int_array(g_sim, "NDIMS", 1, ndims_arr);
-
-            {
-                int nx[3] = {0, 0, 0};
-
-                if (nd == 2)
-                {
-                    nx[0] = (int)dims[1];
-                    nx[1] = (int)dims[0];
-                }
-                else
-                {
-                    nx[0] = (int)dims[2];
-                    nx[1] = (int)dims[1];
-                    nx[2] = (int)dims[0];
-                }
-
-                h5_write_attr_int_array(g_sim, "NX", nd, nx);
-            }
-
-            {
-                int nx[3] = {1, 1, 1};
-                h5_write_attr_int_array(g_sim, "PAR_NODE_CONF", nd, nx);
-            }
-
-            h5_write_attr_double_array(g_sim, "DT", 1, (double[]){g->dt});
-
-            {
-                double xmin[3] = {0.0, 0.0, 0.0};
-                double xmax[3] = {0.0, 0.0, 0.0};
-
-                if (nd == 2)
-                {
-                    xmin[0] = g->ax1_min;
-                    xmax[0] = g->ax1_max;
-                    xmin[1] = g->t_min;
-                    xmax[1] = g->t_max;
-                }
-                else
-                {
-                    xmin[0] = g->ax2_min;
-                    xmax[0] = g->ax2_max;
-                    xmin[1] = g->ax1_min;
-                    xmax[1] = g->ax1_max;
-                    xmin[2] = g->t_min;
-                    xmax[2] = g->t_max;
-                }
-
-                h5_write_attr_double_array(g_sim, "XMIN", nd, xmin);
-                h5_write_attr_double_array(g_sim, "XMAX", nd, xmax);
-            }
-
-            H5Gclose(g_sim);
+            int nx[3] = {1, 1, 1};
+            h5_write_attr_int_array(g_sim, "PAR_NODE_CONF", nd, nx);
         }
+
+        h5_write_attr_double_array(g_sim, "DT", 1, (double[]){g->dt});
+
+        {
+            double xmin[3] = {0.0, 0.0, 0.0};
+            double xmax[3] = {0.0, 0.0, 0.0};
+
+            if (nd == 2)
+            {
+                xmin[0] = g->ax1_min;
+                xmax[0] = g->ax1_max;
+                xmin[1] = g->t_min;
+                xmax[1] = g->t_max;
+            }
+            else
+            {
+                xmin[0] = g->ax2_min;
+                xmax[0] = g->ax2_max;
+                xmin[1] = g->ax1_min;
+                xmax[1] = g->ax1_max;
+                xmin[2] = g->t_min;
+                xmax[2] = g->t_max;
+            }
+
+            h5_write_attr_double_array(g_sim, "XMIN", nd, xmin);
+            h5_write_attr_double_array(g_sim, "XMAX", nd, xmax);
+        }
+
+        H5Gclose(g_sim);
     }
 
     /* metadata */
@@ -840,44 +976,14 @@ static int create_single_dataset_file(hid_t *out_f, hid_t *out_dset,
     h5_write_attr_double(f, "fixed_y_um", g->fixed_y);
     h5_write_attr_double(f, "fixed_z_um", g->fixed_z);
 
-    if (is_rank_file)
-    {
-        h5_write_attr_int(f, "slab_i0", ax_i0);
-        h5_write_attr_int(f, "slab_nloc", ax_nloc);
-    }
-
-    /* cache provenance (NEW) */
     if (cache_config)
         h5_write_attr_string(f, "CACHE_CONFIG", cache_config);
     if (cache_key)
         h5_write_attr_string(f, "CACHE_KEY", cache_key);
     h5_write_attr_int(f, "CACHE_HAS_A", cache_has_A ? 1 : 0);
 
-    /* single dataset */
-    hsize_t cdims[3];
-    const hsize_t *use_dims = dims;
-
-    if (nd == 3)
-    {
-        if (dims[0] != (hsize_t)g->t_n && dims[2] == (hsize_t)g->t_n)
-        {
-            cdims[0] = dims[2];
-            cdims[1] = dims[0];
-            cdims[2] = dims[1];
-            use_dims = cdims;
-        }
-    }
-    else if (nd == 2)
-    {
-        if (dims[0] != (hsize_t)g->t_n && dims[1] == (hsize_t)g->t_n)
-        {
-            cdims[0] = dims[1];
-            cdims[1] = dims[0];
-            use_dims = cdims;
-        }
-    }
-
-    hid_t space = H5Screate_simple(nd, use_dims, NULL);
+    /* dataset creation (CONTIGUOUS: no chunking) */
+    hid_t space = H5Screate_simple(nd, dims, NULL);
     if (space < 0)
     {
         H5Fclose(f);
@@ -887,8 +993,18 @@ static int create_single_dataset_file(hid_t *out_f, hid_t *out_dset,
     char dset_path[64];
     snprintf(dset_path, sizeof(dset_path), "/%s", component_name);
 
+    hid_t dcpl = H5Pcreate(H5P_DATASET_CREATE);
+    if (dcpl >= 0)
+    {
+        (void)H5Pset_fill_time(dcpl, H5D_FILL_TIME_NEVER);
+        (void)H5Pset_alloc_time(dcpl, H5D_ALLOC_TIME_LATE);
+    }
+
     hid_t dset = H5Dcreate2(f, dset_path, H5T_IEEE_F64LE, space,
-                            H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+                            H5P_DEFAULT, (dcpl >= 0 ? dcpl : H5P_DEFAULT), H5P_DEFAULT);
+
+    if (dcpl >= 0)
+        H5Pclose(dcpl);
     H5Sclose(space);
 
     if (dset < 0)
@@ -902,1005 +1018,7 @@ static int create_single_dataset_file(hid_t *out_f, hid_t *out_dset,
     return 0;
 }
 
-/* -------------------------- cleanup rank files -------------------------- */
-
-static void remove_rank_files(const char *cache_dir, const char *comp, int nranks, int root, MPI_Comm comm)
-{
-    int rank = 0;
-    MPI_Comm_rank(comm, &rank);
-    if (rank != root)
-        return;
-
-    char path[512];
-    for (int r = 0; r < nranks; ++r)
-    {
-        component_filename(path, sizeof(path), cache_dir, comp, r, 1);
-        if (unlink(path) != 0)
-            fprintf(stderr, "field_cache: warning: could not remove partial file \"%s\"\n", path);
-    }
-}
-
-/* -------------------------- rank writers -------------------------- */
-
-static int write_rank_files_2d(const InputGridSpec *g,
-                               const LaserPulse *pulse,
-                               const char *prefix,
-                               int compute_A,
-                               size_t a1_i0, size_t a1_nloc,
-                               int rank,
-                               const char *cache_config,
-                               const char *cache_key,
-                               int cache_has_A)
-{
-    hsize_t dims[2] = {(hsize_t)g->t_n, (hsize_t)a1_nloc};
-
-    hid_t fEx, dEx, fEy, dEy, fEz, dEz;
-    char path[512];
-
-    component_filename(path, sizeof(path), prefix, "Ex", rank, 1);
-    if (create_single_dataset_file(&fEx, &dEx, path, "Ex", 2, dims, g, 1, (int)a1_i0, (int)a1_nloc,
-                                   cache_config, cache_key, cache_has_A) != 0)
-        return 1;
-
-    component_filename(path, sizeof(path), prefix, "Ey", rank, 1);
-    if (create_single_dataset_file(&fEy, &dEy, path, "Ey", 2, dims, g, 1, (int)a1_i0, (int)a1_nloc,
-                                   cache_config, cache_key, cache_has_A) != 0)
-        return 2;
-
-    component_filename(path, sizeof(path), prefix, "Ez", rank, 1);
-    if (create_single_dataset_file(&fEz, &dEz, path, "Ez", 2, dims, g, 1, (int)a1_i0, (int)a1_nloc,
-                                   cache_config, cache_key, cache_has_A) != 0)
-        return 3;
-
-    hid_t fAx = -1, dAx = -1, fAy = -1, dAy = -1, fAz = -1, dAz = -1;
-    if (compute_A)
-    {
-        component_filename(path, sizeof(path), prefix, "Ax", rank, 1);
-        if (create_single_dataset_file(&fAx, &dAx, path, "Ax", 2, dims, g, 1, (int)a1_i0, (int)a1_nloc,
-                                       cache_config, cache_key, cache_has_A) != 0)
-            return 4;
-
-        component_filename(path, sizeof(path), prefix, "Ay", rank, 1);
-        if (create_single_dataset_file(&fAy, &dAy, path, "Ay", 2, dims, g, 1, (int)a1_i0, (int)a1_nloc,
-                                       cache_config, cache_key, cache_has_A) != 0)
-            return 5;
-
-        component_filename(path, sizeof(path), prefix, "Az", rank, 1);
-        if (create_single_dataset_file(&fAz, &dAz, path, "Az", 2, dims, g, 1, (int)a1_i0, (int)a1_nloc,
-                                       cache_config, cache_key, cache_has_A) != 0)
-            return 6;
-    }
-
-    double *bx = (double *)calloc(a1_nloc, sizeof(double));
-    double *by = (double *)calloc(a1_nloc, sizeof(double));
-    double *bz = (double *)calloc(a1_nloc, sizeof(double));
-    double *bax = compute_A ? (double *)calloc(a1_nloc, sizeof(double)) : NULL;
-    double *bay = compute_A ? (double *)calloc(a1_nloc, sizeof(double)) : NULL;
-    double *baz = compute_A ? (double *)calloc(a1_nloc, sizeof(double)) : NULL;
-    double *bx_prev = compute_A ? (double *)calloc(a1_nloc, sizeof(double)) : NULL;
-    double *by_prev = compute_A ? (double *)calloc(a1_nloc, sizeof(double)) : NULL;
-    double *bz_prev = compute_A ? (double *)calloc(a1_nloc, sizeof(double)) : NULL;
-
-    if (!bx || !by || !bz || (compute_A && (!bax || !bay || !baz || !bx_prev || !by_prev || !bz_prev)))
-        return 7;
-
-    for (int it = 0; it < g->t_n; ++it)
-    {
-        const double t = g->t_min + (double)it * g->dt;
-
-        /* compute E(t, x) into bx/by/bz */
-        for (size_t ia = 0; ia < a1_nloc; ++ia)
-        {
-            const size_t ig = a1_i0 + ia;
-            const double a1 = g->ax1_min + (double)ig * g->dx1;
-
-            double r[3];
-            set_r_from_axes(g, a1, 0.0, r);
-
-            double E[3];
-            LaserPulse_E(pulse, t, r, E);
-
-            bx[ia] = E[0];
-            by[ia] = E[1];
-            bz[ia] = E[2];
-        }
-
-        /* integrate A forward in time (trapezoid) */
-        if (compute_A)
-        {
-            if (it == 0)
-            {
-                /* A(t0) = 0 by convention */
-                for (size_t ia = 0; ia < a1_nloc; ++ia)
-                {
-                    bax[ia] = 0.0;
-                    bay[ia] = 0.0;
-                    baz[ia] = 0.0;
-
-                    bx_prev[ia] = bx[ia];
-                    by_prev[ia] = by[ia];
-                    bz_prev[ia] = bz[ia];
-                }
-            }
-            else
-            {
-                const double dt = g->dt;
-                for (size_t ia = 0; ia < a1_nloc; ++ia)
-                {
-                    bax[ia] -= 0.5 * (bx_prev[ia] + bx[ia]) * dt;
-                    bay[ia] -= 0.5 * (by_prev[ia] + by[ia]) * dt;
-                    baz[ia] -= 0.5 * (bz_prev[ia] + bz[ia]) * dt;
-
-                    bx_prev[ia] = bx[ia];
-                    by_prev[ia] = by[ia];
-                    bz_prev[ia] = bz[ia];
-                }
-            }
-        }
-
-        /* write slabs at this time */
-        hsize_t start[2] = {(hsize_t)it, 0};
-        hsize_t count[2] = {1, (hsize_t)a1_nloc};
-        hid_t mspace = H5Screate_simple(2, count, NULL);
-
-        hid_t fspace = H5Dget_space(dEx);
-        H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start, NULL, count, NULL);
-        H5Dwrite(dEx, H5T_NATIVE_DOUBLE, mspace, fspace, H5P_DEFAULT, bx);
-        H5Sclose(fspace);
-
-        fspace = H5Dget_space(dEy);
-        H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start, NULL, count, NULL);
-        H5Dwrite(dEy, H5T_NATIVE_DOUBLE, mspace, fspace, H5P_DEFAULT, by);
-        H5Sclose(fspace);
-
-        fspace = H5Dget_space(dEz);
-        H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start, NULL, count, NULL);
-        H5Dwrite(dEz, H5T_NATIVE_DOUBLE, mspace, fspace, H5P_DEFAULT, bz);
-        H5Sclose(fspace);
-
-        if (compute_A)
-        {
-            fspace = H5Dget_space(dAx);
-            H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start, NULL, count, NULL);
-            H5Dwrite(dAx, H5T_NATIVE_DOUBLE, mspace, fspace, H5P_DEFAULT, bax);
-            H5Sclose(fspace);
-
-            fspace = H5Dget_space(dAy);
-            H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start, NULL, count, NULL);
-            H5Dwrite(dAy, H5T_NATIVE_DOUBLE, mspace, fspace, H5P_DEFAULT, bay);
-            H5Sclose(fspace);
-
-            fspace = H5Dget_space(dAz);
-            H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start, NULL, count, NULL);
-            H5Dwrite(dAz, H5T_NATIVE_DOUBLE, mspace, fspace, H5P_DEFAULT, baz);
-            H5Sclose(fspace);
-        }
-
-        H5Sclose(mspace);
-    }
-
-    free(bx);
-    free(by);
-    free(bz);
-    free(bax);
-    free(bay);
-    free(baz);
-    free(bx_prev);
-    free(by_prev);
-    free(bz_prev);
-    H5Dclose(dEx);
-    H5Fclose(fEx);
-    H5Dclose(dEy);
-    H5Fclose(fEy);
-    H5Dclose(dEz);
-    H5Fclose(fEz);
-
-    if (compute_A)
-    {
-        H5Dclose(dAx);
-        H5Fclose(fAx);
-        H5Dclose(dAy);
-        H5Fclose(fAy);
-        H5Dclose(dAz);
-        H5Fclose(fAz);
-    }
-
-    return 0;
-}
-
-static int write_rank_files_3d(const InputGridSpec *g,
-                               const LaserPulse *pulse,
-                               const char *prefix,
-                               int compute_A,
-                               size_t a2_i0, size_t a2_nloc,
-                               int rank,
-                               const char *cache_config,
-                               const char *cache_key,
-                               int cache_has_A)
-{
-    hsize_t dims[3] = {(hsize_t)g->t_n, (hsize_t)g->ax1_n, (hsize_t)a2_nloc};
-
-    hid_t fEx, dEx, fEy, dEy, fEz, dEz;
-    char path[512];
-
-    component_filename(path, sizeof(path), prefix, "Ex", rank, 1);
-    if (create_single_dataset_file(&fEx, &dEx, path, "Ex", 3, dims, g, 1, (int)a2_i0, (int)a2_nloc,
-                                   cache_config, cache_key, cache_has_A) != 0)
-        return 1;
-
-    component_filename(path, sizeof(path), prefix, "Ey", rank, 1);
-    if (create_single_dataset_file(&fEy, &dEy, path, "Ey", 3, dims, g, 1, (int)a2_i0, (int)a2_nloc,
-                                   cache_config, cache_key, cache_has_A) != 0)
-        return 2;
-
-    component_filename(path, sizeof(path), prefix, "Ez", rank, 1);
-    if (create_single_dataset_file(&fEz, &dEz, path, "Ez", 3, dims, g, 1, (int)a2_i0, (int)a2_nloc,
-                                   cache_config, cache_key, cache_has_A) != 0)
-        return 3;
-
-    hid_t fAx = -1, dAx = -1, fAy = -1, dAy = -1, fAz = -1, dAz = -1;
-    if (compute_A)
-    {
-        component_filename(path, sizeof(path), prefix, "Ax", rank, 1);
-        if (create_single_dataset_file(&fAx, &dAx, path, "Ax", 3, dims, g, 1, (int)a2_i0, (int)a2_nloc,
-                                       cache_config, cache_key, cache_has_A) != 0)
-            return 4;
-
-        component_filename(path, sizeof(path), prefix, "Ay", rank, 1);
-        if (create_single_dataset_file(&fAy, &dAy, path, "Ay", 3, dims, g, 1, (int)a2_i0, (int)a2_nloc,
-                                       cache_config, cache_key, cache_has_A) != 0)
-            return 5;
-
-        component_filename(path, sizeof(path), prefix, "Az", rank, 1);
-        if (create_single_dataset_file(&fAz, &dAz, path, "Az", 3, dims, g, 1, (int)a2_i0, (int)a2_nloc,
-                                       cache_config, cache_key, cache_has_A) != 0)
-            return 6;
-    }
-
-    size_t plane = (size_t)g->ax1_n * (size_t)a2_nloc;
-
-    double *Ex = (double *)calloc(plane, sizeof(double));
-    double *Ey = (double *)calloc(plane, sizeof(double));
-    double *Ez = (double *)calloc(plane, sizeof(double));
-    double *Ax = compute_A ? (double *)calloc(plane, sizeof(double)) : NULL;
-    double *Ay = compute_A ? (double *)calloc(plane, sizeof(double)) : NULL;
-    double *Az = compute_A ? (double *)calloc(plane, sizeof(double)) : NULL;
-    double *Ex_prev = compute_A ? (double *)calloc(plane, sizeof(double)) : NULL;
-    double *Ey_prev = compute_A ? (double *)calloc(plane, sizeof(double)) : NULL;
-    double *Ez_prev = compute_A ? (double *)calloc(plane, sizeof(double)) : NULL;
-
-    if (!Ex || !Ey || !Ez || (compute_A && (!Ax || !Ay || !Az || !Ex_prev || !Ey_prev || !Ez_prev)))
-        return 7;
-
-    for (int it = 0; it < g->t_n; ++it)
-    {
-        double t = g->t_min + (double)it * g->dt;
-
-        for (int i1 = 0; i1 < g->ax1_n; ++i1)
-        {
-            double a1 = g->ax1_min + (double)i1 * g->dx1;
-
-            for (size_t jloc = 0; jloc < a2_nloc; ++jloc)
-            {
-                size_t jg = a2_i0 + jloc;
-                double a2 = g->ax2_min + (double)jg * g->dx2;
-
-                double r[3];
-                set_r_from_axes(g, a1, a2, r);
-
-                double E[3];
-                LaserPulse_E(pulse, t, r, E);
-
-                size_t idx = (size_t)i1 * a2_nloc + jloc;
-                Ex[idx] = E[0];
-                Ey[idx] = E[1];
-                Ez[idx] = E[2];
-            }
-        }
-
-        /* integrate A forward in time (trapezoid), once the full plane Ex/Ey/Ez is ready */
-        if (compute_A)
-        {
-            if (it == 0)
-            {
-                /* A(t0)=0 and prev = E(t0) */
-                for (size_t k = 0; k < plane; ++k)
-                {
-                    Ax[k] = Ay[k] = Az[k] = 0.0;
-                    Ex_prev[k] = Ex[k];
-                    Ey_prev[k] = Ey[k];
-                    Ez_prev[k] = Ez[k];
-                }
-            }
-            else
-            {
-                const double dt = g->dt;
-                for (size_t k = 0; k < plane; ++k)
-                {
-                    Ax[k] -= 0.5 * (Ex_prev[k] + Ex[k]) * dt;
-                    Ay[k] -= 0.5 * (Ey_prev[k] + Ey[k]) * dt;
-                    Az[k] -= 0.5 * (Ez_prev[k] + Ez[k]) * dt;
-
-                    Ex_prev[k] = Ex[k];
-                    Ey_prev[k] = Ey[k];
-                    Ez_prev[k] = Ez[k];
-                }
-            }
-        }
-
-        hsize_t start[3] = {(hsize_t)it, 0, 0};
-        hsize_t count[3] = {1, (hsize_t)g->ax1_n, (hsize_t)a2_nloc};
-        hid_t mspace = H5Screate_simple(3, count, NULL);
-
-        hid_t fspace = H5Dget_space(dEx);
-        H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start, NULL, count, NULL);
-        H5Dwrite(dEx, H5T_NATIVE_DOUBLE, mspace, fspace, H5P_DEFAULT, Ex);
-        H5Sclose(fspace);
-
-        fspace = H5Dget_space(dEy);
-        H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start, NULL, count, NULL);
-        H5Dwrite(dEy, H5T_NATIVE_DOUBLE, mspace, fspace, H5P_DEFAULT, Ey);
-        H5Sclose(fspace);
-
-        fspace = H5Dget_space(dEz);
-        H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start, NULL, count, NULL);
-        H5Dwrite(dEz, H5T_NATIVE_DOUBLE, mspace, fspace, H5P_DEFAULT, Ez);
-        H5Sclose(fspace);
-
-        if (compute_A)
-        {
-            fspace = H5Dget_space(dAx);
-            H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start, NULL, count, NULL);
-            H5Dwrite(dAx, H5T_NATIVE_DOUBLE, mspace, fspace, H5P_DEFAULT, Ax);
-            H5Sclose(fspace);
-
-            fspace = H5Dget_space(dAy);
-            H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start, NULL, count, NULL);
-            H5Dwrite(dAy, H5T_NATIVE_DOUBLE, mspace, fspace, H5P_DEFAULT, Ay);
-            H5Sclose(fspace);
-
-            fspace = H5Dget_space(dAz);
-            H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start, NULL, count, NULL);
-            H5Dwrite(dAz, H5T_NATIVE_DOUBLE, mspace, fspace, H5P_DEFAULT, Az);
-            H5Sclose(fspace);
-        }
-
-        H5Sclose(mspace);
-    }
-
-    free(Ex);
-    free(Ey);
-    free(Ez);
-    free(Ax);
-    free(Ay);
-    free(Az);
-    free(Ex_prev);
-    free(Ey_prev);
-    free(Ez_prev);
-
-    H5Dclose(dEx);
-    H5Fclose(fEx);
-    H5Dclose(dEy);
-    H5Fclose(fEy);
-    H5Dclose(dEz);
-    H5Fclose(fEz);
-
-    if (compute_A)
-    {
-        H5Dclose(dAx);
-        H5Fclose(fAx);
-        H5Dclose(dAy);
-        H5Fclose(fAy);
-        H5Dclose(dAz);
-        H5Fclose(fAz);
-    }
-
-    return 0;
-}
-
-/* -------------------------- single-rank fast path writers -------------------------- */
-
-static int write_final_files_2d(const InputGridSpec *g,
-                                const LaserPulse *pulse,
-                                const char *prefix,
-                                int compute_A,
-                                const char *cache_config,
-                                const char *cache_key,
-                                int cache_has_A)
-{
-    /* full global dims */
-    const size_t a1_i0 = 0;
-    const size_t a1_nloc = (size_t)g->ax1_n;
-
-    hsize_t dims[2] = {(hsize_t)g->t_n, (hsize_t)a1_nloc};
-
-    hid_t fEx, dEx, fEy, dEy, fEz, dEz;
-    char path[512];
-
-    component_filename(path, sizeof(path), prefix, "Ex", 0, 0);
-    if (create_single_dataset_file(&fEx, &dEx, path, "Ex", 2, dims, g,
-                                   /*is_rank_file=*/0, 0, 0,
-                                   cache_config, cache_key, cache_has_A) != 0)
-        return 1;
-
-    component_filename(path, sizeof(path), prefix, "Ey", 0, 0);
-    if (create_single_dataset_file(&fEy, &dEy, path, "Ey", 2, dims, g,
-                                   /*is_rank_file=*/0, 0, 0,
-                                   cache_config, cache_key, cache_has_A) != 0)
-        return 2;
-
-    component_filename(path, sizeof(path), prefix, "Ez", 0, 0);
-    if (create_single_dataset_file(&fEz, &dEz, path, "Ez", 2, dims, g,
-                                   /*is_rank_file=*/0, 0, 0,
-                                   cache_config, cache_key, cache_has_A) != 0)
-        return 3;
-
-    hid_t fAx = -1, dAx = -1, fAy = -1, dAy = -1, fAz = -1, dAz = -1;
-    if (compute_A)
-    {
-        component_filename(path, sizeof(path), prefix, "Ax", 0, 0);
-        if (create_single_dataset_file(&fAx, &dAx, path, "Ax", 2, dims, g,
-                                       /*is_rank_file=*/0, 0, 0,
-                                       cache_config, cache_key, cache_has_A) != 0)
-            return 4;
-
-        component_filename(path, sizeof(path), prefix, "Ay", 0, 0);
-        if (create_single_dataset_file(&fAy, &dAy, path, "Ay", 2, dims, g,
-                                       /*is_rank_file=*/0, 0, 0,
-                                       cache_config, cache_key, cache_has_A) != 0)
-            return 5;
-
-        component_filename(path, sizeof(path), prefix, "Az", 0, 0);
-        if (create_single_dataset_file(&fAz, &dAz, path, "Az", 2, dims, g,
-                                       /*is_rank_file=*/0, 0, 0,
-                                       cache_config, cache_key, cache_has_A) != 0)
-            return 6;
-    }
-
-    double *bx = (double *)calloc(a1_nloc, sizeof(double));
-    double *by = (double *)calloc(a1_nloc, sizeof(double));
-    double *bz = (double *)calloc(a1_nloc, sizeof(double));
-    double *bax = compute_A ? (double *)calloc(a1_nloc, sizeof(double)) : NULL;
-    double *bay = compute_A ? (double *)calloc(a1_nloc, sizeof(double)) : NULL;
-    double *baz = compute_A ? (double *)calloc(a1_nloc, sizeof(double)) : NULL;
-    double *bx_prev = compute_A ? (double *)calloc(a1_nloc, sizeof(double)) : NULL;
-    double *by_prev = compute_A ? (double *)calloc(a1_nloc, sizeof(double)) : NULL;
-    double *bz_prev = compute_A ? (double *)calloc(a1_nloc, sizeof(double)) : NULL;
-
-    if (!bx || !by || !bz || (compute_A && (!bax || !bay || !baz || !bx_prev || !by_prev || !bz_prev)))
-        return 7;
-
-    for (int it = 0; it < g->t_n; ++it)
-    {
-        const double t = g->t_min + (double)it * g->dt;
-
-        for (size_t ia = 0; ia < a1_nloc; ++ia)
-        {
-            const size_t ig = a1_i0 + ia;
-            const double a1 = g->ax1_min + (double)ig * g->dx1;
-
-            double r[3];
-            set_r_from_axes(g, a1, 0.0, r);
-
-            double E[3];
-            LaserPulse_E(pulse, t, r, E);
-
-            bx[ia] = E[0];
-            by[ia] = E[1];
-            bz[ia] = E[2];
-        }
-
-        if (compute_A)
-        {
-            if (it == 0)
-            {
-                for (size_t ia = 0; ia < a1_nloc; ++ia)
-                {
-                    bax[ia] = bay[ia] = baz[ia] = 0.0;
-                    bx_prev[ia] = bx[ia];
-                    by_prev[ia] = by[ia];
-                    bz_prev[ia] = bz[ia];
-                }
-            }
-            else
-            {
-                const double dt = g->dt;
-                for (size_t ia = 0; ia < a1_nloc; ++ia)
-                {
-                    bax[ia] -= 0.5 * (bx_prev[ia] + bx[ia]) * dt;
-                    bay[ia] -= 0.5 * (by_prev[ia] + by[ia]) * dt;
-                    baz[ia] -= 0.5 * (bz_prev[ia] + bz[ia]) * dt;
-
-                    bx_prev[ia] = bx[ia];
-                    by_prev[ia] = by[ia];
-                    bz_prev[ia] = bz[ia];
-                }
-            }
-        }
-
-        hsize_t start[2] = {(hsize_t)it, 0};
-        hsize_t count[2] = {1, (hsize_t)a1_nloc};
-        hid_t mspace = H5Screate_simple(2, count, NULL);
-
-        hid_t fspace = H5Dget_space(dEx);
-        H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start, NULL, count, NULL);
-        H5Dwrite(dEx, H5T_NATIVE_DOUBLE, mspace, fspace, H5P_DEFAULT, bx);
-        H5Sclose(fspace);
-
-        fspace = H5Dget_space(dEy);
-        H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start, NULL, count, NULL);
-        H5Dwrite(dEy, H5T_NATIVE_DOUBLE, mspace, fspace, H5P_DEFAULT, by);
-        H5Sclose(fspace);
-
-        fspace = H5Dget_space(dEz);
-        H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start, NULL, count, NULL);
-        H5Dwrite(dEz, H5T_NATIVE_DOUBLE, mspace, fspace, H5P_DEFAULT, bz);
-        H5Sclose(fspace);
-
-        if (compute_A)
-        {
-            fspace = H5Dget_space(dAx);
-            H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start, NULL, count, NULL);
-            H5Dwrite(dAx, H5T_NATIVE_DOUBLE, mspace, fspace, H5P_DEFAULT, bax);
-            H5Sclose(fspace);
-
-            fspace = H5Dget_space(dAy);
-            H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start, NULL, count, NULL);
-            H5Dwrite(dAy, H5T_NATIVE_DOUBLE, mspace, fspace, H5P_DEFAULT, bay);
-            H5Sclose(fspace);
-
-            fspace = H5Dget_space(dAz);
-            H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start, NULL, count, NULL);
-            H5Dwrite(dAz, H5T_NATIVE_DOUBLE, mspace, fspace, H5P_DEFAULT, baz);
-            H5Sclose(fspace);
-        }
-
-        H5Sclose(mspace);
-    }
-
-    free(bx);
-    free(by);
-    free(bz);
-    free(bax);
-    free(bay);
-    free(baz);
-    free(bx_prev);
-    free(by_prev);
-    free(bz_prev);
-
-    H5Dclose(dEx);
-    H5Fclose(fEx);
-    H5Dclose(dEy);
-    H5Fclose(fEy);
-    H5Dclose(dEz);
-    H5Fclose(fEz);
-
-    if (compute_A)
-    {
-        H5Dclose(dAx);
-        H5Fclose(fAx);
-        H5Dclose(dAy);
-        H5Fclose(fAy);
-        H5Dclose(dAz);
-        H5Fclose(fAz);
-    }
-
-    return 0;
-}
-
-static int write_final_files_3d(const InputGridSpec *g,
-                                const LaserPulse *pulse,
-                                const char *prefix,
-                                int compute_A,
-                                const char *cache_config,
-                                const char *cache_key,
-                                int cache_has_A)
-{
-    const size_t a2_i0 = 0;
-    const size_t a2_nloc = (size_t)g->ax2_n;
-
-    hsize_t dims[3] = {(hsize_t)g->t_n, (hsize_t)g->ax1_n, (hsize_t)a2_nloc};
-
-    hid_t fEx, dEx, fEy, dEy, fEz, dEz;
-    char path[512];
-
-    component_filename(path, sizeof(path), prefix, "Ex", 0, 0);
-    if (create_single_dataset_file(&fEx, &dEx, path, "Ex", 3, dims, g,
-                                   /*is_rank_file=*/0, 0, 0,
-                                   cache_config, cache_key, cache_has_A) != 0)
-        return 1;
-
-    component_filename(path, sizeof(path), prefix, "Ey", 0, 0);
-    if (create_single_dataset_file(&fEy, &dEy, path, "Ey", 3, dims, g,
-                                   /*is_rank_file=*/0, 0, 0,
-                                   cache_config, cache_key, cache_has_A) != 0)
-        return 2;
-
-    component_filename(path, sizeof(path), prefix, "Ez", 0, 0);
-    if (create_single_dataset_file(&fEz, &dEz, path, "Ez", 3, dims, g,
-                                   /*is_rank_file=*/0, 0, 0,
-                                   cache_config, cache_key, cache_has_A) != 0)
-        return 3;
-
-    hid_t fAx = -1, dAx = -1, fAy = -1, dAy = -1, fAz = -1, dAz = -1;
-    if (compute_A)
-    {
-        component_filename(path, sizeof(path), prefix, "Ax", 0, 0);
-        if (create_single_dataset_file(&fAx, &dAx, path, "Ax", 3, dims, g,
-                                       /*is_rank_file=*/0, 0, 0,
-                                       cache_config, cache_key, cache_has_A) != 0)
-            return 4;
-
-        component_filename(path, sizeof(path), prefix, "Ay", 0, 0);
-        if (create_single_dataset_file(&fAy, &dAy, path, "Ay", 3, dims, g,
-                                       /*is_rank_file=*/0, 0, 0,
-                                       cache_config, cache_key, cache_has_A) != 0)
-            return 5;
-
-        component_filename(path, sizeof(path), prefix, "Az", 0, 0);
-        if (create_single_dataset_file(&fAz, &dAz, path, "Az", 3, dims, g,
-                                       /*is_rank_file=*/0, 0, 0,
-                                       cache_config, cache_key, cache_has_A) != 0)
-            return 6;
-    }
-
-    size_t plane = (size_t)g->ax1_n * (size_t)a2_nloc;
-
-    double *Ex = (double *)calloc(plane, sizeof(double));
-    double *Ey = (double *)calloc(plane, sizeof(double));
-    double *Ez = (double *)calloc(plane, sizeof(double));
-    double *Ax = compute_A ? (double *)calloc(plane, sizeof(double)) : NULL;
-    double *Ay = compute_A ? (double *)calloc(plane, sizeof(double)) : NULL;
-    double *Az = compute_A ? (double *)calloc(plane, sizeof(double)) : NULL;
-    double *Ex_prev = compute_A ? (double *)calloc(plane, sizeof(double)) : NULL;
-    double *Ey_prev = compute_A ? (double *)calloc(plane, sizeof(double)) : NULL;
-    double *Ez_prev = compute_A ? (double *)calloc(plane, sizeof(double)) : NULL;
-
-    if (!Ex || !Ey || !Ez || (compute_A && (!Ax || !Ay || !Az || !Ex_prev || !Ey_prev || !Ez_prev)))
-        return 7;
-
-    for (int it = 0; it < g->t_n; ++it)
-    {
-        double t = g->t_min + (double)it * g->dt;
-
-        for (int i1 = 0; i1 < g->ax1_n; ++i1)
-        {
-            double a1 = g->ax1_min + (double)i1 * g->dx1;
-
-            for (size_t jloc = 0; jloc < a2_nloc; ++jloc)
-            {
-                size_t jg = a2_i0 + jloc;
-                double a2 = g->ax2_min + (double)jg * g->dx2;
-
-                double r[3];
-                set_r_from_axes(g, a1, a2, r);
-
-                double E[3];
-                LaserPulse_E(pulse, t, r, E);
-
-                size_t idx = (size_t)i1 * a2_nloc + jloc;
-                Ex[idx] = E[0];
-                Ey[idx] = E[1];
-                Ez[idx] = E[2];
-            }
-        }
-
-        if (compute_A)
-        {
-            if (it == 0)
-            {
-                for (size_t k = 0; k < plane; ++k)
-                {
-                    Ax[k] = Ay[k] = Az[k] = 0.0;
-                    Ex_prev[k] = Ex[k];
-                    Ey_prev[k] = Ey[k];
-                    Ez_prev[k] = Ez[k];
-                }
-            }
-            else
-            {
-                const double dt = g->dt;
-                for (size_t k = 0; k < plane; ++k)
-                {
-                    Ax[k] -= 0.5 * (Ex_prev[k] + Ex[k]) * dt;
-                    Ay[k] -= 0.5 * (Ey_prev[k] + Ey[k]) * dt;
-                    Az[k] -= 0.5 * (Ez_prev[k] + Ez[k]) * dt;
-
-                    Ex_prev[k] = Ex[k];
-                    Ey_prev[k] = Ey[k];
-                    Ez_prev[k] = Ez[k];
-                }
-            }
-        }
-
-        hsize_t start[3] = {(hsize_t)it, 0, 0};
-        hsize_t count[3] = {1, (hsize_t)g->ax1_n, (hsize_t)a2_nloc};
-        hid_t mspace = H5Screate_simple(3, count, NULL);
-
-        hid_t fspace = H5Dget_space(dEx);
-        H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start, NULL, count, NULL);
-        H5Dwrite(dEx, H5T_NATIVE_DOUBLE, mspace, fspace, H5P_DEFAULT, Ex);
-        H5Sclose(fspace);
-
-        fspace = H5Dget_space(dEy);
-        H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start, NULL, count, NULL);
-        H5Dwrite(dEy, H5T_NATIVE_DOUBLE, mspace, fspace, H5P_DEFAULT, Ey);
-        H5Sclose(fspace);
-
-        fspace = H5Dget_space(dEz);
-        H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start, NULL, count, NULL);
-        H5Dwrite(dEz, H5T_NATIVE_DOUBLE, mspace, fspace, H5P_DEFAULT, Ez);
-        H5Sclose(fspace);
-
-        if (compute_A)
-        {
-            fspace = H5Dget_space(dAx);
-            H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start, NULL, count, NULL);
-            H5Dwrite(dAx, H5T_NATIVE_DOUBLE, mspace, fspace, H5P_DEFAULT, Ax);
-            H5Sclose(fspace);
-
-            fspace = H5Dget_space(dAy);
-            H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start, NULL, count, NULL);
-            H5Dwrite(dAy, H5T_NATIVE_DOUBLE, mspace, fspace, H5P_DEFAULT, Ay);
-            H5Sclose(fspace);
-
-            fspace = H5Dget_space(dAz);
-            H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start, NULL, count, NULL);
-            H5Dwrite(dAz, H5T_NATIVE_DOUBLE, mspace, fspace, H5P_DEFAULT, Az);
-            H5Sclose(fspace);
-        }
-
-        H5Sclose(mspace);
-    }
-
-    free(Ex);
-    free(Ey);
-    free(Ez);
-    free(Ax);
-    free(Ay);
-    free(Az);
-    free(Ex_prev);
-    free(Ey_prev);
-    free(Ez_prev);
-
-    H5Dclose(dEx);
-    H5Fclose(fEx);
-    H5Dclose(dEy);
-    H5Fclose(fEy);
-    H5Dclose(dEz);
-    H5Fclose(fEz);
-
-    if (compute_A)
-    {
-        H5Dclose(dAx);
-        H5Fclose(fAx);
-        H5Dclose(dAy);
-        H5Fclose(fAy);
-        H5Dclose(dAz);
-        H5Fclose(fAz);
-    }
-
-    return 0;
-}
-
-/* -------------------------- merge helpers -------------------------- */
-
-static int merge_component_2d(const InputGridSpec *g, const char *prefix,
-                              const char *comp, int compute_A,
-                              int root, MPI_Comm comm,
-                              const char *cache_config,
-                              const char *cache_key,
-                              int cache_has_A)
-{
-    (void)compute_A;
-
-    int rank = 0, nr = 1;
-    MPI_Comm_rank(comm, &rank);
-    MPI_Comm_size(comm, &nr);
-
-    if (rank != root)
-        return 0;
-
-    char outpath[512];
-    component_filename(outpath, sizeof(outpath), prefix, comp, 0, 0);
-
-    hsize_t gdims[2] = {(hsize_t)g->t_n, (hsize_t)g->ax1_n};
-
-    hid_t fout, dout;
-    if (create_single_dataset_file(&fout, &dout, outpath, comp, 2, gdims, g, 0, 0, 0,
-                                   cache_config, cache_key, cache_has_A) != 0)
-        return 1;
-
-    for (int r = 0; r < nr; ++r)
-    {
-        char inpath[512];
-        component_filename(inpath, sizeof(inpath), prefix, comp, r, 1);
-
-        hid_t fin = h5_open_ro_or_fail(inpath);
-        if (fin < 0)
-        {
-            fprintf(stderr, "merge: cannot open %s\n", inpath);
-            continue;
-        }
-
-        int i0 = 0, nloc = 0;
-        hid_t a = H5Aopen(fin, "slab_i0", H5P_DEFAULT);
-        if (a >= 0)
-        {
-            H5Aread(a, H5T_NATIVE_INT, &i0);
-            H5Aclose(a);
-        }
-        a = H5Aopen(fin, "slab_nloc", H5P_DEFAULT);
-        if (a >= 0)
-        {
-            H5Aread(a, H5T_NATIVE_INT, &nloc);
-            H5Aclose(a);
-        }
-
-        if (nloc <= 0)
-        {
-            H5Fclose(fin);
-            continue;
-        }
-
-        char dset_path[64];
-        snprintf(dset_path, sizeof(dset_path), "/%s", comp);
-
-        hid_t din = H5Dopen2(fin, dset_path, H5P_DEFAULT);
-        if (din < 0)
-        {
-            H5Fclose(fin);
-            continue;
-        }
-
-        double *buf = (double *)calloc((size_t)nloc, sizeof(double));
-        if (!buf)
-        {
-            H5Dclose(din);
-            H5Fclose(fin);
-            continue;
-        }
-
-        for (int it = 0; it < g->t_n; ++it)
-        {
-            hsize_t s_start[2] = {(hsize_t)it, 0};
-            hsize_t s_count[2] = {1, (hsize_t)nloc};
-            hid_t smem = H5Screate_simple(2, s_count, NULL);
-
-            hid_t ss = H5Dget_space(din);
-            H5Sselect_hyperslab(ss, H5S_SELECT_SET, s_start, NULL, s_count, NULL);
-            H5Dread(din, H5T_NATIVE_DOUBLE, smem, ss, H5P_DEFAULT, buf);
-            H5Sclose(ss);
-
-            hsize_t t_start[2] = {(hsize_t)it, (hsize_t)i0};
-            hsize_t t_count[2] = {1, (hsize_t)nloc};
-            hid_t ts = H5Dget_space(dout);
-            H5Sselect_hyperslab(ts, H5S_SELECT_SET, t_start, NULL, t_count, NULL);
-            H5Dwrite(dout, H5T_NATIVE_DOUBLE, smem, ts, H5P_DEFAULT, buf);
-            H5Sclose(ts);
-
-            H5Sclose(smem);
-        }
-
-        free(buf);
-        H5Dclose(din);
-        H5Fclose(fin);
-    }
-
-    H5Dclose(dout);
-    H5Fclose(fout);
-    return 0;
-}
-
-static int merge_component_3d(const InputGridSpec *g, const char *prefix,
-                              const char *comp, int compute_A,
-                              int root, MPI_Comm comm,
-                              const char *cache_config,
-                              const char *cache_key,
-                              int cache_has_A)
-{
-    (void)compute_A;
-
-    int rank = 0, nr = 1;
-    MPI_Comm_rank(comm, &rank);
-    MPI_Comm_size(comm, &nr);
-
-    if (rank != root)
-        return 0;
-
-    char outpath[512];
-    component_filename(outpath, sizeof(outpath), prefix, comp, 0, 0);
-
-    hsize_t gdims[3] = {(hsize_t)g->t_n, (hsize_t)g->ax1_n, (hsize_t)g->ax2_n};
-
-    hid_t fout, dout;
-    if (create_single_dataset_file(&fout, &dout, outpath, comp, 3, gdims, g, 0, 0, 0,
-                                   cache_config, cache_key, cache_has_A) != 0)
-        return 1;
-
-    for (int r = 0; r < nr; ++r)
-    {
-        char inpath[512];
-        component_filename(inpath, sizeof(inpath), prefix, comp, r, 1);
-
-        hid_t fin = h5_open_ro_or_fail(inpath);
-        if (fin < 0)
-        {
-            fprintf(stderr, "merge: cannot open %s\n", inpath);
-            continue;
-        }
-
-        int i0 = 0, nloc = 0;
-        hid_t a = H5Aopen(fin, "slab_i0", H5P_DEFAULT);
-        if (a >= 0)
-        {
-            H5Aread(a, H5T_NATIVE_INT, &i0);
-            H5Aclose(a);
-        }
-        a = H5Aopen(fin, "slab_nloc", H5P_DEFAULT);
-        if (a >= 0)
-        {
-            H5Aread(a, H5T_NATIVE_INT, &nloc);
-            H5Aclose(a);
-        }
-
-        if (nloc <= 0)
-        {
-            H5Fclose(fin);
-            continue;
-        }
-
-        char dset_path[64];
-        snprintf(dset_path, sizeof(dset_path), "/%s", comp);
-
-        hid_t din = H5Dopen2(fin, dset_path, H5P_DEFAULT);
-        if (din < 0)
-        {
-            H5Fclose(fin);
-            continue;
-        }
-
-        size_t plane = (size_t)g->ax1_n * (size_t)nloc;
-        double *buf = (double *)calloc(plane, sizeof(double));
-        if (!buf)
-        {
-            H5Dclose(din);
-            H5Fclose(fin);
-            continue;
-        }
-
-        for (int it = 0; it < g->t_n; ++it)
-        {
-            hsize_t s_start[3] = {(hsize_t)it, 0, 0};
-            hsize_t s_count[3] = {1, (hsize_t)g->ax1_n, (hsize_t)nloc};
-            hid_t smem = H5Screate_simple(3, s_count, NULL);
-
-            hid_t ss = H5Dget_space(din);
-            H5Sselect_hyperslab(ss, H5S_SELECT_SET, s_start, NULL, s_count, NULL);
-            H5Dread(din, H5T_NATIVE_DOUBLE, smem, ss, H5P_DEFAULT, buf);
-            H5Sclose(ss);
-
-            hsize_t t_start[3] = {(hsize_t)it, 0, (hsize_t)i0};
-            hsize_t t_count[3] = {1, (hsize_t)g->ax1_n, (hsize_t)nloc};
-            hid_t ts = H5Dget_space(dout);
-            H5Sselect_hyperslab(ts, H5S_SELECT_SET, t_start, NULL, t_count, NULL);
-            H5Dwrite(dout, H5T_NATIVE_DOUBLE, smem, ts, H5P_DEFAULT, buf);
-            H5Sclose(ts);
-
-            H5Sclose(smem);
-        }
-
-        free(buf);
-        H5Dclose(din);
-        H5Fclose(fin);
-    }
-
-    H5Dclose(dout);
-    H5Fclose(fout);
-    return 0;
-}
-
-/* -------------------------- compatibility check (NEW) -------------------------- */
+/* -------------------------- compatibility check (unchanged; serial open) -------------------------- */
 
 static int h5_read_attr_int(hid_t obj, const char *name, int *out)
 {
@@ -1917,7 +1035,6 @@ static int h5_read_attr_int(hid_t obj, const char *name, int *out)
     return (st < 0) ? -2 : 1;
 }
 
-/* Read fixed-length string attribute as allocated C string. Works with your h5_write_attr_string(). */
 static int h5_read_attr_string_alloc(hid_t obj, const char *name, char **out_s)
 {
     if (!out_s)
@@ -1966,7 +1083,6 @@ static int h5_read_attr_string_alloc(hid_t obj, const char *name, char **out_s)
     return 1;
 }
 
-/* Public: return 1 if compatible, 0 if not, <0 error. */
 int field_cache_is_compatible(const char *cache_dir, const InputSimSpec *sim, int require_A,
                               char *why, size_t why_sz)
 {
@@ -1975,11 +1091,10 @@ int field_cache_is_compatible(const char *cache_dir, const InputSimSpec *sim, in
     if (!cache_dir || !sim)
         return -1;
 
-    /* Open merged Ex.h5 (we use a single component as authority) */
     char path[512];
-    component_filename(path, sizeof(path), cache_dir, "Ex", 0, 0);
+    component_filename(path, sizeof(path), cache_dir, "Ex");
 
-    hid_t f = h5_open_ro_or_fail(path);
+    hid_t f = h5_open_ro_serial(path);
     if (f < 0)
     {
         if (why && why_sz)
@@ -2010,7 +1125,6 @@ int field_cache_is_compatible(const char *cache_dir, const InputSimSpec *sim, in
         return 0;
     }
 
-    /* Compute expected key from current sim */
     char *cfg = field_cache_build_config_string(sim, require_A ? 1 : 0);
     if (!cfg)
     {
@@ -2044,6 +1158,516 @@ int field_cache_is_compatible(const char *cache_dir, const InputSimSpec *sim, in
 
     free(key_file);
     return 1;
+}
+
+/* -------------------------- parallel slab writers (buffered time blocks) -------------------------- */
+
+static int write_parallel_files_2d(const InputGridSpec *g,
+                                   const LaserPulse *pulse,
+                                   const char *prefix,
+                                   int compute_A,
+                                   size_t a1_i0, size_t a1_nloc,
+                                   const char *cache_config,
+                                   const char *cache_key,
+                                   int cache_has_A,
+                                   size_t t_chunk,
+                                   int use_parallel_hdf5,
+                                   MPI_Comm comm)
+{
+    /* global dims: [t, ax1] */
+    hsize_t gdims[2] = {(hsize_t)g->t_n, (hsize_t)g->ax1_n};
+
+    hid_t fEx = -1, dEx = -1, fEy = -1, dEy = -1, fEz = -1, dEz = -1;
+    hid_t fAx = -1, dAx = -1, fAy = -1, dAy = -1, fAz = -1, dAz = -1;
+
+    char path[512];
+
+    component_filename(path, sizeof(path), prefix, "Ex");
+    if (create_single_dataset_file(&fEx, &dEx, path, "Ex", 2, gdims, g, cache_config, cache_key, cache_has_A,
+                                   t_chunk, use_parallel_hdf5, comm) != 0)
+        return 1;
+
+    component_filename(path, sizeof(path), prefix, "Ey");
+    if (create_single_dataset_file(&fEy, &dEy, path, "Ey", 2, gdims, g, cache_config, cache_key, cache_has_A,
+                                   t_chunk, use_parallel_hdf5, comm) != 0)
+        return 2;
+
+    component_filename(path, sizeof(path), prefix, "Ez");
+    if (create_single_dataset_file(&fEz, &dEz, path, "Ez", 2, gdims, g, cache_config, cache_key, cache_has_A,
+                                   t_chunk, use_parallel_hdf5, comm) != 0)
+        return 3;
+
+    if (compute_A)
+    {
+        component_filename(path, sizeof(path), prefix, "Ax");
+        if (create_single_dataset_file(&fAx, &dAx, path, "Ax", 2, gdims, g, cache_config, cache_key, cache_has_A,
+                                       t_chunk, use_parallel_hdf5, comm) != 0)
+            return 4;
+
+        component_filename(path, sizeof(path), prefix, "Ay");
+        if (create_single_dataset_file(&fAy, &dAy, path, "Ay", 2, gdims, g, cache_config, cache_key, cache_has_A,
+                                       t_chunk, use_parallel_hdf5, comm) != 0)
+            return 5;
+
+        component_filename(path, sizeof(path), prefix, "Az");
+        if (create_single_dataset_file(&fAz, &dAz, path, "Az", 2, gdims, g, cache_config, cache_key, cache_has_A,
+                                       t_chunk, use_parallel_hdf5, comm) != 0)
+            return 6;
+    }
+
+    /* dxpl for collective writes in parallel mode */
+    hid_t dxpl = H5P_DEFAULT;
+#ifdef H5_HAVE_PARALLEL
+    hid_t dxpl_local = -1;
+    if (use_parallel_hdf5)
+    {
+        dxpl_local = H5Pcreate(H5P_DATASET_XFER);
+        if (dxpl_local >= 0)
+            (void)H5Pset_dxpl_mpio(dxpl_local, H5FD_MPIO_COLLECTIVE);
+        dxpl = (dxpl_local >= 0) ? dxpl_local : H5P_DEFAULT;
+    }
+#endif
+
+    /* per-time scratch */
+    double *Ex_line = (double *)malloc(a1_nloc * sizeof(double));
+    double *Ey_line = (double *)malloc(a1_nloc * sizeof(double));
+    double *Ez_line = (double *)malloc(a1_nloc * sizeof(double));
+    double *Ax_line = compute_A ? (double *)malloc(a1_nloc * sizeof(double)) : NULL;
+    double *Ay_line = compute_A ? (double *)malloc(a1_nloc * sizeof(double)) : NULL;
+    double *Az_line = compute_A ? (double *)malloc(a1_nloc * sizeof(double)) : NULL;
+    double *Ex_prev = compute_A ? (double *)malloc(a1_nloc * sizeof(double)) : NULL;
+    double *Ey_prev = compute_A ? (double *)malloc(a1_nloc * sizeof(double)) : NULL;
+    double *Ez_prev = compute_A ? (double *)malloc(a1_nloc * sizeof(double)) : NULL;
+
+    if (!Ex_line || !Ey_line || !Ez_line ||
+        (compute_A && (!Ax_line || !Ay_line || !Az_line || !Ex_prev || !Ey_prev || !Ez_prev)))
+        return 20;
+
+    size_t block_cap = (t_chunk < 1) ? 1 : t_chunk;
+
+    double *Ex_blk = (double *)malloc(block_cap * a1_nloc * sizeof(double));
+    double *Ey_blk = (double *)malloc(block_cap * a1_nloc * sizeof(double));
+    double *Ez_blk = (double *)malloc(block_cap * a1_nloc * sizeof(double));
+    double *Ax_blk = compute_A ? (double *)malloc(block_cap * a1_nloc * sizeof(double)) : NULL;
+    double *Ay_blk = compute_A ? (double *)malloc(block_cap * a1_nloc * sizeof(double)) : NULL;
+    double *Az_blk = compute_A ? (double *)malloc(block_cap * a1_nloc * sizeof(double)) : NULL;
+
+    if (!Ex_blk || !Ey_blk || !Ez_blk || (compute_A && (!Ax_blk || !Ay_blk || !Az_blk)))
+        return 21;
+
+    int t0 = 0;
+    int nb = 0;
+
+    for (int it = 0; it < g->t_n; ++it)
+    {
+        const double t = g->t_min + (double)it * g->dt;
+
+        for (size_t ia = 0; ia < a1_nloc; ++ia)
+        {
+            const size_t ig = a1_i0 + ia;
+            const double a1 = g->ax1_min + (double)ig * g->dx1;
+
+            double r[3];
+            set_r_from_axes(g, a1, 0.0, r);
+
+            double E[3];
+            LaserPulse_E(pulse, t, r, E);
+
+            Ex_line[ia] = E[0];
+            Ey_line[ia] = E[1];
+            Ez_line[ia] = E[2];
+        }
+
+        if (compute_A)
+        {
+            if (it == 0)
+            {
+                for (size_t ia = 0; ia < a1_nloc; ++ia)
+                {
+                    Ax_line[ia] = Ay_line[ia] = Az_line[ia] = 0.0;
+                    Ex_prev[ia] = Ex_line[ia];
+                    Ey_prev[ia] = Ey_line[ia];
+                    Ez_prev[ia] = Ez_line[ia];
+                }
+            }
+            else
+            {
+                const double dt = g->dt;
+                for (size_t ia = 0; ia < a1_nloc; ++ia)
+                {
+                    Ax_line[ia] -= 0.5 * (Ex_prev[ia] + Ex_line[ia]) * dt;
+                    Ay_line[ia] -= 0.5 * (Ey_prev[ia] + Ey_line[ia]) * dt;
+                    Az_line[ia] -= 0.5 * (Ez_prev[ia] + Ez_line[ia]) * dt;
+
+                    Ex_prev[ia] = Ex_line[ia];
+                    Ey_prev[ia] = Ey_line[ia];
+                    Ez_prev[ia] = Ez_line[ia];
+                }
+            }
+        }
+
+        memcpy(Ex_blk + (size_t)nb * a1_nloc, Ex_line, a1_nloc * sizeof(double));
+        memcpy(Ey_blk + (size_t)nb * a1_nloc, Ey_line, a1_nloc * sizeof(double));
+        memcpy(Ez_blk + (size_t)nb * a1_nloc, Ez_line, a1_nloc * sizeof(double));
+        if (compute_A)
+        {
+            memcpy(Ax_blk + (size_t)nb * a1_nloc, Ax_line, a1_nloc * sizeof(double));
+            memcpy(Ay_blk + (size_t)nb * a1_nloc, Ay_line, a1_nloc * sizeof(double));
+            memcpy(Az_blk + (size_t)nb * a1_nloc, Az_line, a1_nloc * sizeof(double));
+        }
+        nb++;
+
+        if ((size_t)nb == block_cap || it == g->t_n - 1)
+        {
+            /* file hyperslab: [t0: t0+nb, a1_i0 : a1_i0+a1_nloc] */
+            hsize_t start[2] = {(hsize_t)t0, (hsize_t)a1_i0};
+            hsize_t count[2] = {(hsize_t)nb, (hsize_t)a1_nloc};
+
+            hid_t mspace = H5Screate_simple(2, count, NULL);
+            if (mspace < 0)
+                return 30;
+
+#define WRITE_ONE_2D(DSET, BUF)                                                        \
+    do                                                                                 \
+    {                                                                                  \
+        hid_t fspace = H5Dget_space((DSET));                                           \
+        if (fspace < 0)                                                                \
+        {                                                                              \
+            H5Sclose(mspace);                                                          \
+            return 31;                                                                 \
+        }                                                                              \
+        if (H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start, NULL, count, NULL) < 0) \
+        {                                                                              \
+            H5Sclose(fspace);                                                          \
+            H5Sclose(mspace);                                                          \
+            return 32;                                                                 \
+        }                                                                              \
+        if (H5Dwrite((DSET), H5T_NATIVE_DOUBLE, mspace, fspace, dxpl, (BUF)) < 0)      \
+        {                                                                              \
+            H5Sclose(fspace);                                                          \
+            H5Sclose(mspace);                                                          \
+            return 33;                                                                 \
+        }                                                                              \
+        H5Sclose(fspace);                                                              \
+    } while (0)
+
+            WRITE_ONE_2D(dEx, Ex_blk);
+            WRITE_ONE_2D(dEy, Ey_blk);
+            WRITE_ONE_2D(dEz, Ez_blk);
+            if (compute_A)
+            {
+                WRITE_ONE_2D(dAx, Ax_blk);
+                WRITE_ONE_2D(dAy, Ay_blk);
+                WRITE_ONE_2D(dAz, Az_blk);
+            }
+
+#undef WRITE_ONE_2D
+
+            H5Sclose(mspace);
+
+            t0 += nb;
+            nb = 0;
+        }
+    }
+
+    free(Ex_line);
+    free(Ey_line);
+    free(Ez_line);
+    free(Ax_line);
+    free(Ay_line);
+    free(Az_line);
+    free(Ex_prev);
+    free(Ey_prev);
+    free(Ez_prev);
+
+    free(Ex_blk);
+    free(Ey_blk);
+    free(Ez_blk);
+    free(Ax_blk);
+    free(Ay_blk);
+    free(Az_blk);
+
+#ifdef H5_HAVE_PARALLEL
+    if (use_parallel_hdf5 && dxpl_local >= 0)
+        H5Pclose(dxpl_local);
+#endif
+
+    H5Dclose(dEx);
+    H5Fclose(fEx);
+    H5Dclose(dEy);
+    H5Fclose(fEy);
+    H5Dclose(dEz);
+    H5Fclose(fEz);
+
+    if (compute_A)
+    {
+        H5Dclose(dAx);
+        H5Fclose(fAx);
+        H5Dclose(dAy);
+        H5Fclose(fAy);
+        H5Dclose(dAz);
+        H5Fclose(fAz);
+    }
+
+    return 0;
+}
+
+static int write_parallel_files_3d(const InputGridSpec *g,
+                                   const LaserPulse *pulse,
+                                   const char *prefix,
+                                   int compute_A,
+                                   size_t a1_i0, size_t a1_nloc, /* <-- decompose ax1 now */
+                                   const char *cache_config,
+                                   const char *cache_key,
+                                   int cache_has_A,
+                                   size_t t_chunk,
+                                   int use_parallel_hdf5,
+                                   MPI_Comm comm)
+{
+    /* global dims: [t, ax1, ax2] ; decompose ax1 (middle dim) */
+    hsize_t gdims[3] = {(hsize_t)g->t_n, (hsize_t)g->ax1_n, (hsize_t)g->ax2_n};
+
+    hid_t fEx = -1, dEx = -1, fEy = -1, dEy = -1, fEz = -1, dEz = -1;
+    hid_t fAx = -1, dAx = -1, fAy = -1, dAy = -1, fAz = -1, dAz = -1;
+
+    char path[512];
+
+    component_filename(path, sizeof(path), prefix, "Ex");
+    if (create_single_dataset_file(&fEx, &dEx, path, "Ex", 3, gdims, g, cache_config, cache_key, cache_has_A,
+                                   t_chunk, use_parallel_hdf5, comm) != 0)
+        return 1;
+
+    component_filename(path, sizeof(path), prefix, "Ey");
+    if (create_single_dataset_file(&fEy, &dEy, path, "Ey", 3, gdims, g, cache_config, cache_key, cache_has_A,
+                                   t_chunk, use_parallel_hdf5, comm) != 0)
+        return 2;
+
+    component_filename(path, sizeof(path), prefix, "Ez");
+    if (create_single_dataset_file(&fEz, &dEz, path, "Ez", 3, gdims, g, cache_config, cache_key, cache_has_A,
+                                   t_chunk, use_parallel_hdf5, comm) != 0)
+        return 3;
+
+    if (compute_A)
+    {
+        component_filename(path, sizeof(path), prefix, "Ax");
+        if (create_single_dataset_file(&fAx, &dAx, path, "Ax", 3, gdims, g, cache_config, cache_key, cache_has_A,
+                                       t_chunk, use_parallel_hdf5, comm) != 0)
+            return 4;
+
+        component_filename(path, sizeof(path), prefix, "Ay");
+        if (create_single_dataset_file(&fAy, &dAy, path, "Ay", 3, gdims, g, cache_config, cache_key, cache_has_A,
+                                       t_chunk, use_parallel_hdf5, comm) != 0)
+            return 5;
+
+        component_filename(path, sizeof(path), prefix, "Az");
+        if (create_single_dataset_file(&fAz, &dAz, path, "Az", 3, gdims, g, cache_config, cache_key, cache_has_A,
+                                       t_chunk, use_parallel_hdf5, comm) != 0)
+            return 6;
+    }
+
+    /* collective dxpl */
+    hid_t dxpl = H5P_DEFAULT;
+#ifdef H5_HAVE_PARALLEL
+    hid_t dxpl_local = -1;
+    if (use_parallel_hdf5)
+    {
+        dxpl_local = H5Pcreate(H5P_DATASET_XFER);
+        if (dxpl_local >= 0)
+            (void)H5Pset_dxpl_mpio(dxpl_local, H5FD_MPIO_COLLECTIVE);
+        dxpl = (dxpl_local >= 0) ? dxpl_local : H5P_DEFAULT;
+    }
+#endif
+
+    /* local plane is contiguous in ax2 */
+    const size_t plane = a1_nloc * (size_t)g->ax2_n;
+
+    double *Ex = (double *)malloc(plane * sizeof(double));
+    double *Ey = (double *)malloc(plane * sizeof(double));
+    double *Ez = (double *)malloc(plane * sizeof(double));
+    double *Ax = compute_A ? (double *)malloc(plane * sizeof(double)) : NULL;
+    double *Ay = compute_A ? (double *)malloc(plane * sizeof(double)) : NULL;
+    double *Az = compute_A ? (double *)malloc(plane * sizeof(double)) : NULL;
+    double *Ex_prev = compute_A ? (double *)malloc(plane * sizeof(double)) : NULL;
+    double *Ey_prev = compute_A ? (double *)malloc(plane * sizeof(double)) : NULL;
+    double *Ez_prev = compute_A ? (double *)malloc(plane * sizeof(double)) : NULL;
+
+    if (!Ex || !Ey || !Ez || (compute_A && (!Ax || !Ay || !Az || !Ex_prev || !Ey_prev || !Ez_prev)))
+        return 20;
+
+    size_t block_cap = (t_chunk < 1) ? 1 : t_chunk;
+
+    double *Ex_blk = (double *)malloc(block_cap * plane * sizeof(double));
+    double *Ey_blk = (double *)malloc(block_cap * plane * sizeof(double));
+    double *Ez_blk = (double *)malloc(block_cap * plane * sizeof(double));
+    double *Ax_blk = compute_A ? (double *)malloc(block_cap * plane * sizeof(double)) : NULL;
+    double *Ay_blk = compute_A ? (double *)malloc(block_cap * plane * sizeof(double)) : NULL;
+    double *Az_blk = compute_A ? (double *)malloc(block_cap * plane * sizeof(double)) : NULL;
+
+    if (!Ex_blk || !Ey_blk || !Ez_blk || (compute_A && (!Ax_blk || !Ay_blk || !Az_blk)))
+        return 21;
+
+    int t0 = 0;
+    int nb = 0;
+
+    for (int it = 0; it < g->t_n; ++it)
+    {
+        const double t = g->t_min + (double)it * g->dt;
+
+        /* fill local slab */
+        for (size_t i1loc = 0; i1loc < a1_nloc; ++i1loc)
+        {
+            const size_t i1g = a1_i0 + i1loc;
+            const double a1 = g->ax1_min + (double)i1g * g->dx1;
+
+            for (int i2 = 0; i2 < g->ax2_n; ++i2)
+            {
+                const double a2 = g->ax2_min + (double)i2 * g->dx2;
+
+                double r[3];
+                set_r_from_axes(g, a1, a2, r);
+
+                double E[3];
+                LaserPulse_E(pulse, t, r, E);
+
+                const size_t idx = i1loc * (size_t)g->ax2_n + (size_t)i2;
+                Ex[idx] = E[0];
+                Ey[idx] = E[1];
+                Ez[idx] = E[2];
+            }
+        }
+
+        if (compute_A)
+        {
+            if (it == 0)
+            {
+                for (size_t k = 0; k < plane; ++k)
+                {
+                    Ax[k] = Ay[k] = Az[k] = 0.0;
+                    Ex_prev[k] = Ex[k];
+                    Ey_prev[k] = Ey[k];
+                    Ez_prev[k] = Ez[k];
+                }
+            }
+            else
+            {
+                const double dt = g->dt;
+                for (size_t k = 0; k < plane; ++k)
+                {
+                    Ax[k] -= 0.5 * (Ex_prev[k] + Ex[k]) * dt;
+                    Ay[k] -= 0.5 * (Ey_prev[k] + Ey[k]) * dt;
+                    Az[k] -= 0.5 * (Ez_prev[k] + Ez[k]) * dt;
+
+                    Ex_prev[k] = Ex[k];
+                    Ey_prev[k] = Ey[k];
+                    Ez_prev[k] = Ez[k];
+                }
+            }
+        }
+
+        memcpy(Ex_blk + (size_t)nb * plane, Ex, plane * sizeof(double));
+        memcpy(Ey_blk + (size_t)nb * plane, Ey, plane * sizeof(double));
+        memcpy(Ez_blk + (size_t)nb * plane, Ez, plane * sizeof(double));
+        if (compute_A)
+        {
+            memcpy(Ax_blk + (size_t)nb * plane, Ax, plane * sizeof(double));
+            memcpy(Ay_blk + (size_t)nb * plane, Ay, plane * sizeof(double));
+            memcpy(Az_blk + (size_t)nb * plane, Az, plane * sizeof(double));
+        }
+        nb++;
+
+        if ((size_t)nb == block_cap || it == g->t_n - 1)
+        {
+            /* contiguous hyperslab for each rank: [t0:t0+nb, a1_i0:a1_i0+a1_nloc, 0:ax2_n] */
+            hsize_t start[3] = {(hsize_t)t0, (hsize_t)a1_i0, 0};
+            hsize_t count[3] = {(hsize_t)nb, (hsize_t)a1_nloc, (hsize_t)g->ax2_n};
+
+            hid_t mspace = H5Screate_simple(3, count, NULL);
+            if (mspace < 0)
+                return 30;
+
+#define WRITE_ONE_3D(DSET, BUF)                                                        \
+    do                                                                                 \
+    {                                                                                  \
+        hid_t fspace = H5Dget_space((DSET));                                           \
+        if (fspace < 0)                                                                \
+        {                                                                              \
+            H5Sclose(mspace);                                                          \
+            return 31;                                                                 \
+        }                                                                              \
+        if (H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start, NULL, count, NULL) < 0) \
+        {                                                                              \
+            H5Sclose(fspace);                                                          \
+            H5Sclose(mspace);                                                          \
+            return 32;                                                                 \
+        }                                                                              \
+        if (H5Dwrite((DSET), H5T_NATIVE_DOUBLE, mspace, fspace, dxpl, (BUF)) < 0)      \
+        {                                                                              \
+            H5Sclose(fspace);                                                          \
+            H5Sclose(mspace);                                                          \
+            return 33;                                                                 \
+        }                                                                              \
+        H5Sclose(fspace);                                                              \
+    } while (0)
+
+            WRITE_ONE_3D(dEx, Ex_blk);
+            WRITE_ONE_3D(dEy, Ey_blk);
+            WRITE_ONE_3D(dEz, Ez_blk);
+            if (compute_A)
+            {
+                WRITE_ONE_3D(dAx, Ax_blk);
+                WRITE_ONE_3D(dAy, Ay_blk);
+                WRITE_ONE_3D(dAz, Az_blk);
+            }
+
+#undef WRITE_ONE_3D
+
+            H5Sclose(mspace);
+
+            t0 += nb;
+            nb = 0;
+        }
+    }
+
+    free(Ex);
+    free(Ey);
+    free(Ez);
+    free(Ax);
+    free(Ay);
+    free(Az);
+    free(Ex_prev);
+    free(Ey_prev);
+    free(Ez_prev);
+
+    free(Ex_blk);
+    free(Ey_blk);
+    free(Ez_blk);
+    free(Ax_blk);
+    free(Ay_blk);
+    free(Az_blk);
+
+#ifdef H5_HAVE_PARALLEL
+    if (use_parallel_hdf5 && dxpl_local >= 0)
+        H5Pclose(dxpl_local);
+#endif
+
+    H5Dclose(dEx);
+    H5Fclose(fEx);
+    H5Dclose(dEy);
+    H5Fclose(fEy);
+    H5Dclose(dEz);
+    H5Fclose(fEz);
+
+    if (compute_A)
+    {
+        H5Dclose(dAx);
+        H5Fclose(fAx);
+        H5Dclose(dAy);
+        H5Fclose(fAy);
+        H5Dclose(dAz);
+        H5Fclose(fAz);
+    }
+
+    return 0;
 }
 
 /* -------------------------- main entry -------------------------- */
@@ -2085,7 +1709,6 @@ int field_cache_run(const InputSimSpec *sim,
             MPI_Abort(comm, 100);
         }
     }
-
     MPI_Barrier(comm);
 
     const InputGridSpec *g = &sim->grid;
@@ -2108,201 +1731,104 @@ int field_cache_run(const InputSimSpec *sim,
     status_rootf(comm, opt.root_rank, "field_cache: ranks=%d, output prefix=\"%s\"", nr, prefix);
     status_rootf(comm, opt.root_rank, "field_cache: CACHE_KEY=%s", cache_key);
 
-    /* ------------------ single-rank fast path: write final files directly ------------------ */
-    if (nr == 1)
+    /* Enforce: MPI runs require parallel HDF5 */
+    int use_parallel_hdf5 = (nr > 1) ? 1 : 0;
+    if (nr > 1)
     {
-        status_root(comm, opt.root_rank,
-                    "field_cache: single-rank mode — writing final cache files directly (no merge)");
-
-        int rcf = 0;
-        if (!g->has_ax2)
-            rcf = write_final_files_2d(g, pulse, prefix, opt.compute_A, cache_config, cache_key, opt.compute_A);
-        else
-            rcf = write_final_files_3d(g, pulse, prefix, opt.compute_A, cache_config, cache_key, opt.compute_A);
-
-        if (rcf != 0)
+#ifndef H5_HAVE_PARALLEL
+        if (rank == opt.root_rank)
         {
-            die_root(comm, opt.root_rank, "field_cache: single-rank write failed");
-            free(cache_config);
-            return 60 + rcf;
+            fprintf(stderr,
+                    "field_cache: error: MPI run (nranks=%d) requires Parallel HDF5 (H5_HAVE_PARALLEL not defined).\n"
+                    "field_cache: rebuild/link against an MPI-enabled HDF5 and recompile.\n",
+                    nr);
         }
-
         free(cache_config);
-        return 0;
+        return 500;
+#else
+        if (rank == opt.root_rank)
+            status_root(comm, opt.root_rank, "field_cache: MPI mode — using Parallel HDF5 (MPI-IO), no merge step");
+#endif
     }
+    else
+    {
+        status_root(comm, opt.root_rank, "field_cache: serial mode — using standard HDF5");
+    }
+
+    uint64_t budget_rank = per_rank_budget_bytes(opt.io_buffer_bytes, nr);
+    if (rank == opt.root_rank)
+    {
+        status_rootf(comm, opt.root_rank,
+                     "field_cache: io_buffer_bytes(total)=%" PRIu64 "  => per-rank budget=%" PRIu64 " bytes",
+                     opt.io_buffer_bytes, budget_rank);
+    }
+
+    const int ncomp_write = opt.compute_A ? 6 : 3;
 
     int rc = 0;
 
     if (!g->has_ax2)
     {
         size_t i0 = 0, nloc = 0;
-        decompose_1d((size_t)g->ax1_n, rank, nr, &i0, &nloc);
-
-        rc = write_rank_files_2d(g, pulse, prefix, opt.compute_A, i0, nloc, rank,
-                                 cache_config, cache_key, opt.compute_A);
-        if (rc != 0)
+        if (nr == 1)
         {
-            die_root(comm, opt.root_rank, "field_cache: rank write (2D) failed");
-            free(cache_config);
-            return 10 + rc;
+            i0 = 0;
+            nloc = (size_t)g->ax1_n;
         }
+        else
+        {
+            decompose_1d((size_t)g->ax1_n, rank, nr, &i0, &nloc);
+        }
+
+        size_t plane = nloc;
+        size_t t_chunk = choose_t_chunk(budget_rank, ncomp_write, plane, g->t_n);
 
         MPI_Barrier(comm);
+        double t0 = now_s(comm);
 
-        if (opt.merge_on_root)
+        rc = write_parallel_files_2d(g, pulse, prefix, opt.compute_A, i0, nloc,
+                                     cache_config, cache_key, opt.compute_A, t_chunk,
+                                     use_parallel_hdf5, comm);
+
+        double t1 = now_s(comm);
+        report_time_stats(comm, opt.root_rank, "write cache (2D)", t1 - t0);
+    }
+    else
+    {
+        size_t i0 = 0, nloc = 0;
+        if (nr == 1)
         {
-            status_root(comm, opt.root_rank, "field_cache: per-rank slabs computed");
-
-            rc = merge_component_2d(g, prefix, "Ex", opt.compute_A, opt.root_rank, comm,
-                                    cache_config, cache_key, opt.compute_A);
-            if (rc == 0)
-                remove_rank_files(prefix, "Ex", nr, opt.root_rank, comm);
-            if (rc != 0)
-            {
-                free(cache_config);
-                return 20 + rc;
-            }
-
-            rc = merge_component_2d(g, prefix, "Ey", opt.compute_A, opt.root_rank, comm,
-                                    cache_config, cache_key, opt.compute_A);
-            if (rc == 0)
-                remove_rank_files(prefix, "Ey", nr, opt.root_rank, comm);
-            if (rc != 0)
-            {
-                free(cache_config);
-                return 21 + rc;
-            }
-
-            rc = merge_component_2d(g, prefix, "Ez", opt.compute_A, opt.root_rank, comm,
-                                    cache_config, cache_key, opt.compute_A);
-            if (rc == 0)
-                remove_rank_files(prefix, "Ez", nr, opt.root_rank, comm);
-            if (rc != 0)
-            {
-                free(cache_config);
-                return 22 + rc;
-            }
-
-            if (opt.compute_A)
-            {
-                rc = merge_component_2d(g, prefix, "Ax", opt.compute_A, opt.root_rank, comm,
-                                        cache_config, cache_key, opt.compute_A);
-                if (rc == 0)
-                    remove_rank_files(prefix, "Ax", nr, opt.root_rank, comm);
-                if (rc != 0)
-                {
-                    free(cache_config);
-                    return 23 + rc;
-                }
-
-                rc = merge_component_2d(g, prefix, "Ay", opt.compute_A, opt.root_rank, comm,
-                                        cache_config, cache_key, opt.compute_A);
-                if (rc == 0)
-                    remove_rank_files(prefix, "Ay", nr, opt.root_rank, comm);
-                if (rc != 0)
-                {
-                    free(cache_config);
-                    return 24 + rc;
-                }
-
-                rc = merge_component_2d(g, prefix, "Az", opt.compute_A, opt.root_rank, comm,
-                                        cache_config, cache_key, opt.compute_A);
-                if (rc == 0)
-                    remove_rank_files(prefix, "Az", nr, opt.root_rank, comm);
-                if (rc != 0)
-                {
-                    free(cache_config);
-                    return 25 + rc;
-                }
-            }
-
-            MPI_Barrier(comm);
+            i0 = 0;
+            nloc = (size_t)g->ax1_n;
+        }
+        else
+        {
+            /* decompose ax1 (middle dim) for contiguous writes */
+            decompose_1d((size_t)g->ax1_n, rank, nr, &i0, &nloc);
         }
 
-        free(cache_config);
-        return 0;
+        size_t plane = nloc * (size_t)g->ax2_n;
+        size_t t_chunk = choose_t_chunk(budget_rank, ncomp_write, plane, g->t_n);
+
+        MPI_Barrier(comm);
+        double t0s = now_s(comm);
+
+        rc = write_parallel_files_3d(g, pulse, prefix, opt.compute_A, i0, nloc,
+                                     cache_config, cache_key, opt.compute_A, t_chunk,
+                                     use_parallel_hdf5, comm);
+
+        double t1s = now_s(comm);
+        report_time_stats(comm, opt.root_rank, "write cache (3D)", t1s - t0s);
     }
 
-    status_root(comm, opt.root_rank, "field_cache: computing per-rank slabs...");
-
-    size_t i0 = 0, nloc = 0;
-    decompose_1d((size_t)g->ax2_n, rank, nr, &i0, &nloc);
-
-    rc = write_rank_files_3d(g, pulse, prefix, opt.compute_A, i0, nloc, rank,
-                             cache_config, cache_key, opt.compute_A);
     if (rc != 0)
     {
-        die_root(comm, opt.root_rank, "field_cache: rank write (3D) failed");
+        die_root(comm, opt.root_rank, "field_cache: write failed");
         free(cache_config);
-        return 30 + rc;
+        return 600 + rc;
     }
 
-    MPI_Barrier(comm);
-    status_root(comm, opt.root_rank, "field_cache: per-rank slabs computed");
-
-    if (opt.merge_on_root)
-    {
-        status_root(comm, opt.root_rank, "field_cache: merging rank slabs into final files...");
-
-        rc = merge_component_3d(g, prefix, "Ex", opt.compute_A, opt.root_rank, comm,
-                                cache_config, cache_key, opt.compute_A);
-        remove_rank_files(prefix, "Ex", nr, opt.root_rank, comm);
-        if (rc != 0)
-        {
-            free(cache_config);
-            return 40 + rc;
-        }
-
-        rc = merge_component_3d(g, prefix, "Ey", opt.compute_A, opt.root_rank, comm,
-                                cache_config, cache_key, opt.compute_A);
-        remove_rank_files(prefix, "Ey", nr, opt.root_rank, comm);
-        if (rc != 0)
-        {
-            free(cache_config);
-            return 41 + rc;
-        }
-
-        rc = merge_component_3d(g, prefix, "Ez", opt.compute_A, opt.root_rank, comm,
-                                cache_config, cache_key, opt.compute_A);
-        remove_rank_files(prefix, "Ez", nr, opt.root_rank, comm);
-        if (rc != 0)
-        {
-            free(cache_config);
-            return 42 + rc;
-        }
-
-        if (opt.compute_A)
-        {
-            rc = merge_component_3d(g, prefix, "Ax", opt.compute_A, opt.root_rank, comm,
-                                    cache_config, cache_key, opt.compute_A);
-            remove_rank_files(prefix, "Ax", nr, opt.root_rank, comm);
-            if (rc != 0)
-            {
-                free(cache_config);
-                return 43 + rc;
-            }
-
-            rc = merge_component_3d(g, prefix, "Ay", opt.compute_A, opt.root_rank, comm,
-                                    cache_config, cache_key, opt.compute_A);
-            remove_rank_files(prefix, "Ay", nr, opt.root_rank, comm);
-            if (rc != 0)
-            {
-                free(cache_config);
-                return 44 + rc;
-            }
-
-            rc = merge_component_3d(g, prefix, "Az", opt.compute_A, opt.root_rank, comm,
-                                    cache_config, cache_key, opt.compute_A);
-            remove_rank_files(prefix, "Az", nr, opt.root_rank, comm);
-            if (rc != 0)
-            {
-                free(cache_config);
-                return 45 + rc;
-            }
-        }
-    }
-
-    status_root(comm, opt.root_rank, "field_cache: done\n");
+    status_root(comm, opt.root_rank, "field_cache: done");
     free(cache_config);
     return 0;
 }
