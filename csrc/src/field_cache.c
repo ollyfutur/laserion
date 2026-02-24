@@ -1683,6 +1683,14 @@ int field_cache_run(const InputSimSpec *sim,
 
     FieldCacheOptions opt = opt_in ? *opt_in : field_cache_default_options();
 
+    /* If user specified a global memory budget in [run], override cache I/O buffer budget. */
+    if (sim->run.memory_total_bytes > 0)
+        opt.io_buffer_bytes = sim->run.memory_total_bytes;
+
+    /* Safety: if somehow still zero, fall back to default. */
+    if (opt.io_buffer_bytes == 0)
+        opt.io_buffer_bytes = field_cache_default_options().io_buffer_bytes;
+
     int rank = 0, nr = 1;
     MPI_Comm_rank(comm, &rank);
     MPI_Comm_size(comm, &nr);

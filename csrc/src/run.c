@@ -7,6 +7,8 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <stdlib.h> /* malloc, free */
+#include <stdint.h>
+#include <inttypes.h>
 #include <math.h>
 #include "inputdeck.h"
 #include "laser_build.h"
@@ -477,12 +479,33 @@ int run_from_inputdeck(const char *toml_path, MPI_Comm comm)
 
     int rank = 0;
     MPI_Comm_rank(comm, &rank);
+    int nranks = 1;
+    MPI_Comm_size(comm, &nranks);
+
+    uint64_t mem_per_rank_bytes = 0;
+    if (sim.run.memory_total_bytes > 0)
+    {
+        mem_per_rank_bytes = sim.run.memory_total_bytes / (uint64_t)nranks;
+
+        const uint64_t MIN_PER_RANK = 16ULL * 1024ULL * 1024ULL; /* 16 MiB floor */
+        if (mem_per_rank_bytes < MIN_PER_RANK)
+            mem_per_rank_bytes = MIN_PER_RANK;
+    }
 
     if (rank == 0)
     {
         printf("run: working_dir            = \"%s\"\n", sim.run.working_dir);
         printf("run: gas species            = \"%s\"\n", sim.run.gas);
         printf("run: ionization model       = \"%s\"\n", sim.run.ionization_model);
+        if (sim.run.memory_total_bytes > 0)
+        {
+            printf("run: memory total (global)  = %" PRIu64 " GiB\n",
+                   sim.run.memory_total_bytes / (1024ULL * 1024ULL * 1024ULL));
+            printf("run: memory per-rank        = %" PRIu64 " MiB (%d ranks)\n",
+                   mem_per_rank_bytes / (1024ULL * 1024ULL), nranks);
+        }
+        else
+            printf("run: memory total (global)  = auto\n");
         printf("\n");
         fflush(stdout);
     }

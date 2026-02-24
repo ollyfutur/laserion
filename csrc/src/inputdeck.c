@@ -379,6 +379,7 @@ static void run_defaults(RunSpec *r)
     snprintf(r->working_dir, sizeof(r->working_dir), ".");
     snprintf(r->gas, sizeof(r->gas), "H");
     snprintf(r->ionization_model, sizeof(r->ionization_model), "adk");
+    r->memory_total_bytes = 0;
 }
 
 static void field_cache_defaults(FieldCacheSpec *fc)
@@ -480,6 +481,32 @@ static int parse_run(toml_table_t *root, RunSpec *r)
                 "Supported gases are those listed in ionization_model.c tables.\n",
                 r->gas);
         return 1;
+    }
+
+    /* global memory budget in GiB */
+    {
+        toml_datum_t d = toml_int_in(tr, "memory_total_gib");
+        if (d.ok)
+        {
+            if (d.u.i < 0)
+            {
+                fprintf(stderr, "inputdeck: [run] memory_total_gib must be >= 0\n");
+                return 1;
+            }
+
+            uint64_t gib = (uint64_t)d.u.i;
+
+            /* convert GiB → bytes */
+            const uint64_t GIB = 1024ULL * 1024ULL * 1024ULL;
+
+            if (gib > UINT64_MAX / GIB)
+            {
+                fprintf(stderr, "inputdeck: [run] memory_total_gib is too large\n");
+                return 1;
+            }
+
+            r->memory_total_bytes = gib * GIB;
+        }
     }
 
     return 0;
@@ -1673,6 +1700,17 @@ void inputdeck_dump(const InputSimSpec *sim)
     const InputGridSpec *g = &sim->grid;
     printf("[run]\n");
     printf("  working_dir=%s\n\n", sim->run.working_dir);
+    printf("  gas=%s\n", sim->run.gas);
+    printf("  ionization_model=%s\n", sim->run.ionization_model);
+    if (sim->run.memory_total_bytes > 0)
+    {
+        printf("  memory_total_gib=%llu\n",
+               (unsigned long long)(sim->run.memory_total_bytes / (1024ULL * 1024ULL * 1024ULL)));
+    }
+    else
+    {
+        printf("  memory_total_gib=0\n");
+    }
     /* field_cache */
     {
         const FieldCacheSpec *fc = &sim->field_cache;

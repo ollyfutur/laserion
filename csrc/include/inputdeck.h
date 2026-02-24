@@ -5,6 +5,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C"
@@ -124,6 +125,7 @@ extern "C"
         char working_dir[256];
         char gas[8];
         char ionization_model[16];
+        uint64_t memory_total_bytes;
     } RunSpec;
 
     /* -------------------------- Field cache control -------------------------- */
