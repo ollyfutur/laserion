@@ -1,6 +1,7 @@
 [run]
-working_dir = "."
-gas         = "He"
+working_dir      = "."
+gas              = "He"
+memory_total_gib = 10
 
 [field_cache]
 mode = "auto"
