@@ -484,28 +484,48 @@ static int parse_run(toml_table_t *root, RunSpec *r)
     }
 
     /* global memory budget in GiB */
+    /* global memory budget in GiB (allow int or float) */
     {
-        toml_datum_t d = toml_int_in(tr, "memory_total_gib");
-        if (d.ok)
+        const double GIB_D = 1024.0 * 1024.0 * 1024.0;
+
+        bool have = false;
+        double gib_d = 0.0;
+
+        /* Prefer float if user provides one (e.g. 0.1), but also accept ints (e.g. 64). */
+        toml_datum_t dd = toml_double_in(tr, "memory_total_gib");
+        if (dd.ok)
         {
-            if (d.u.i < 0)
+            gib_d = dd.u.d;
+            have = true;
+        }
+        else
+        {
+            toml_datum_t di = toml_int_in(tr, "memory_total_gib");
+            if (di.ok)
             {
-                fprintf(stderr, "inputdeck: [run] memory_total_gib must be >= 0\n");
+                gib_d = (double)di.u.i;
+                have = true;
+            }
+        }
+
+        if (have)
+        {
+            if (!isfinite(gib_d) || gib_d < 0.0)
+            {
+                fprintf(stderr, "inputdeck: [run] memory_total_gib must be finite and >= 0\n");
                 return 1;
             }
 
-            uint64_t gib = (uint64_t)d.u.i;
+            /* Convert GiB → bytes. Use rounding to nearest byte. */
+            double bytes_d = gib_d * GIB_D;
 
-            /* convert GiB → bytes */
-            const uint64_t GIB = 1024ULL * 1024ULL * 1024ULL;
-
-            if (gib > UINT64_MAX / GIB)
+            if (bytes_d > (double)UINT64_MAX)
             {
                 fprintf(stderr, "inputdeck: [run] memory_total_gib is too large\n");
                 return 1;
             }
 
-            r->memory_total_bytes = gib * GIB;
+            r->memory_total_bytes = (uint64_t)llround(bytes_d);
         }
     }
 
@@ -1704,8 +1724,8 @@ void inputdeck_dump(const InputSimSpec *sim)
     printf("  ionization_model=%s\n", sim->run.ionization_model);
     if (sim->run.memory_total_bytes > 0)
     {
-        printf("  memory_total_gib=%llu\n",
-               (unsigned long long)(sim->run.memory_total_bytes / (1024ULL * 1024ULL * 1024ULL)));
+        double gib = (double)sim->run.memory_total_bytes / (1024.0 * 1024.0 * 1024.0);
+        printf("  memory_total_gib=%.6g\n", gib);
     }
     else
     {
