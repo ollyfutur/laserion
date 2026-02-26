@@ -30,7 +30,7 @@
 #include <hdf5.h>
 #include <unistd.h>
 #include <inttypes.h>
-
+#include <mpi.h>
 #ifdef H5_HAVE_PARALLEL
 #include <H5FDmpio.h>
 #endif
@@ -768,10 +768,6 @@ static size_t choose_t_chunk(uint64_t budget_bytes, int ncomp, size_t plane, int
     if (tc > (uint64_t)t_n)
         tc = (uint64_t)t_n;
 
-    const uint64_t hard_cap = 16384ULL;
-    if (tc > hard_cap)
-        tc = hard_cap;
-
     return (size_t)tc;
 }
 
@@ -1427,11 +1423,19 @@ static int write_parallel_files_3d(const InputGridSpec *g,
     /* global dims: [t, ax1, ax2] ; decompose ax1 (middle dim) */
     hsize_t gdims[3] = {(hsize_t)g->t_n, (hsize_t)g->ax1_n, (hsize_t)g->ax2_n};
 
+    /* timing breakdown (per-rank, reduced later) */
+    double t_create_local = 0.0;  /* create files + datasets + metadata */
+    double t_compute_local = 0.0; /* LaserPulse_E + A integration + memcpy into blocks */
+    double t_write_local = 0.0;   /* H5Dwrite hyperslabs */
+    double t_close_local = 0.0;   /* H5 close + frees (optional) */
+
+    double ttmp0 = 0.0, ttmp1 = 0.0;
+
     hid_t fEx = -1, dEx = -1, fEy = -1, dEy = -1, fEz = -1, dEz = -1;
     hid_t fAx = -1, dAx = -1, fAy = -1, dAy = -1, fAz = -1, dAz = -1;
 
     char path[512];
-
+    ttmp0 = now_s(comm);
     component_filename(path, sizeof(path), prefix, "Ex");
     if (create_single_dataset_file(&fEx, &dEx, path, "Ex", 3, gdims, g, cache_config, cache_key, cache_has_A,
                                    t_chunk, use_parallel_hdf5, comm) != 0)
@@ -1464,7 +1468,8 @@ static int write_parallel_files_3d(const InputGridSpec *g,
                                        t_chunk, use_parallel_hdf5, comm) != 0)
             return 6;
     }
-
+    ttmp1 = now_s(comm);
+    t_create_local += (ttmp1 - ttmp0);
     /* collective dxpl */
     hid_t dxpl = H5P_DEFAULT;
 #ifdef H5_HAVE_PARALLEL
@@ -1512,7 +1517,7 @@ static int write_parallel_files_3d(const InputGridSpec *g,
     for (int it = 0; it < g->t_n; ++it)
     {
         const double t = g->t_min + (double)it * g->dt;
-
+        ttmp0 = now_s(comm);
         /* fill local slab */
         for (size_t i1loc = 0; i1loc < a1_nloc; ++i1loc)
         {
@@ -1574,9 +1579,11 @@ static int write_parallel_files_3d(const InputGridSpec *g,
             memcpy(Az_blk + (size_t)nb * plane, Az, plane * sizeof(double));
         }
         nb++;
-
+        ttmp1 = now_s(comm);
+        t_compute_local += (ttmp1 - ttmp0);
         if ((size_t)nb == block_cap || it == g->t_n - 1)
         {
+            ttmp0 = now_s(comm);
             /* contiguous hyperslab for each rank: [t0:t0+nb, a1_i0:a1_i0+a1_nloc, 0:ax2_n] */
             hsize_t start[3] = {(hsize_t)t0, (hsize_t)a1_i0, 0};
             hsize_t count[3] = {(hsize_t)nb, (hsize_t)a1_nloc, (hsize_t)g->ax2_n};
@@ -1622,12 +1629,13 @@ static int write_parallel_files_3d(const InputGridSpec *g,
 #undef WRITE_ONE_3D
 
             H5Sclose(mspace);
-
+            ttmp1 = now_s(comm);
+            t_write_local += (ttmp1 - ttmp0);
             t0 += nb;
             nb = 0;
         }
     }
-
+    ttmp0 = now_s(comm);
     free(Ex);
     free(Ey);
     free(Ez);
@@ -1666,7 +1674,14 @@ static int write_parallel_files_3d(const InputGridSpec *g,
         H5Dclose(dAz);
         H5Fclose(fAz);
     }
+    ttmp1 = now_s(comm);
+    t_close_local += (ttmp1 - ttmp0);
 
+    /* report breakdown */
+    report_time_stats(comm, 0, "cache create/open (3D)", t_create_local);
+    report_time_stats(comm, 0, "cache compute/buffer (3D)", t_compute_local);
+    report_time_stats(comm, 0, "cache hdf5 write (3D)", t_write_local);
+    report_time_stats(comm, 0, "cache close/free (3D)", t_close_local);
     return 0;
 }
 
@@ -1816,7 +1831,38 @@ int field_cache_run(const InputSimSpec *sim,
         }
 
         size_t plane = nloc * (size_t)g->ax2_n;
-        size_t t_chunk = choose_t_chunk(budget_rank, ncomp_write, plane, g->t_n);
+
+        /* local candidate based on local plane */
+        uint64_t t_chunk_local_u64 = (uint64_t)choose_t_chunk(budget_rank, ncomp_write, plane, g->t_n);
+
+        /* enforce identical flush schedule for collective HDF5 */
+        uint64_t t_chunk_u64 = t_chunk_local_u64;
+        MPI_Allreduce(&t_chunk_local_u64, &t_chunk_u64, 1, MPI_UINT64_T, MPI_MIN, comm);
+
+        size_t t_chunk = (size_t)t_chunk_u64;
+        if (t_chunk < 1)
+            t_chunk = 1;
+
+        /* --- report buffering policy --- */
+        {
+            uint64_t bytes_per_block =
+                (uint64_t)ncomp_write * (uint64_t)plane * (uint64_t)t_chunk * (uint64_t)sizeof(double);
+
+            /* these are the big allocations in write_parallel_files_3d:
+               Ex_blk/Ey_blk/Ez_blk (+ Ax_blk/Ay_blk/Az_blk if compute_A) */
+            int nflush = (g->t_n + (int)t_chunk - 1) / (int)t_chunk;
+
+            status_rootf(comm, opt.root_rank,
+                         "field_cache: buffering: plane=%zu doubles, t_chunk=%zu, comps=%d => block_bytes=%" PRIu64 " (%.3f GiB), flushes=%d",
+                         plane, t_chunk, ncomp_write, bytes_per_block, (double)bytes_per_block / (1024.0 * 1024.0 * 1024.0), nflush);
+
+            if (bytes_per_block > budget_rank)
+            {
+                status_rootf(comm, opt.root_rank,
+                             "field_cache: WARNING: block_bytes (%" PRIu64 ") > per-rank budget (%" PRIu64 "). You will allocate more than the intended budget.",
+                             bytes_per_block, budget_rank);
+            }
+        }
 
         MPI_Barrier(comm);
         double t0s = now_s(comm);
@@ -1826,7 +1872,7 @@ int field_cache_run(const InputSimSpec *sim,
                                      use_parallel_hdf5, comm);
 
         double t1s = now_s(comm);
-        report_time_stats(comm, opt.root_rank, "write cache (3D)", t1s - t0s);
+        report_time_stats(comm, opt.root_rank, "write total (3D)", t1s - t0s);
     }
 
     if (rc != 0)

@@ -500,9 +500,9 @@ int run_from_inputdeck(const char *toml_path, MPI_Comm comm)
         if (sim.run.memory_total_bytes > 0)
         {
             printf("run: memory total (global)  = %" PRIu64 " GiB\n",
-                   sim.run.memory_total_bytes / (1024ULL * 1024ULL * 1024ULL));
+                   (uint64_t)(sim.run.memory_total_bytes / (1024ULL * 1024ULL * 1024ULL)));
             printf("run: memory per-rank        = %" PRIu64 " MiB (%d ranks)\n",
-                   mem_per_rank_bytes / (1024ULL * 1024ULL), nranks);
+                   (uint64_t)(mem_per_rank_bytes / (1024ULL * 1024ULL)), nranks);
         }
         else
             printf("run: memory total (global)  = auto\n");
