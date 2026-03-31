@@ -34,6 +34,9 @@
 #ifdef H5_HAVE_PARALLEL
 #include <H5FDmpio.h>
 #endif
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 /* -------------------------- timing helpers -------------------------- */
 
@@ -751,14 +754,15 @@ static uint64_t per_rank_budget_bytes(uint64_t opt_total, int nranks)
     return b;
 }
 
-/* Compute t-chunk such that ncomp * t_chunk * plane * sizeof(double) <= budget.
+/* Compute t-chunk such that ncomp * t_chunk * plane * sizeof(float) <= budget.
+   Block buffers are float32; intermediate compute buffers are double but much smaller.
    NOTE: This now controls ONLY the in-memory time blocking, not HDF5 chunking. */
 static size_t choose_t_chunk(uint64_t budget_bytes, int ncomp, size_t plane, int t_n)
 {
     if (plane == 0 || ncomp <= 0)
         return 1;
 
-    uint64_t denom = (uint64_t)ncomp * (uint64_t)plane * (uint64_t)sizeof(double);
+    uint64_t denom = (uint64_t)ncomp * (uint64_t)plane * (uint64_t)sizeof(float);
     if (denom == 0)
         return 1;
 
@@ -790,11 +794,22 @@ static hid_t h5_create_trunc_parallel(const char *path, MPI_Comm comm)
     if (fapl < 0)
         return -1;
 
-    if (H5Pset_fapl_mpio(fapl, comm, MPI_INFO_NULL) < 0)
+    /* MPI-IO hints: enable collective buffering and set a large CB buffer.
+     * These are hints only — ROMIO will use them if the filesystem supports it
+     * (e.g. Lustre, GPFS). They are safely ignored on systems that don't. */
+    MPI_Info mpi_info;
+    MPI_Info_create(&mpi_info);
+    MPI_Info_set(mpi_info, "romio_cb_write",  "enable");
+    MPI_Info_set(mpi_info, "cb_buffer_size",  "67108864"); /* 64 MiB per aggregator */
+    MPI_Info_set(mpi_info, "romio_ds_write",  "disable");  /* no data sieving on write */
+
+    if (H5Pset_fapl_mpio(fapl, comm, mpi_info) < 0)
     {
+        MPI_Info_free(&mpi_info);
         H5Pclose(fapl);
         return -2;
     }
+    MPI_Info_free(&mpi_info);
 
     hid_t f = H5Fcreate(path, H5F_ACC_TRUNC, H5P_DEFAULT, fapl);
     H5Pclose(fapl);
@@ -993,10 +1008,12 @@ static int create_single_dataset_file(hid_t *out_f, hid_t *out_dset,
     if (dcpl >= 0)
     {
         (void)H5Pset_fill_time(dcpl, H5D_FILL_TIME_NEVER);
-        (void)H5Pset_alloc_time(dcpl, H5D_ALLOC_TIME_LATE);
+        /* Pre-allocate full dataset extent at creation time so all parallel
+           writers know their exact byte offsets without metadata coordination. */
+        (void)H5Pset_alloc_time(dcpl, H5D_ALLOC_TIME_EARLY);
     }
 
-    hid_t dset = H5Dcreate2(f, dset_path, H5T_IEEE_F64LE, space,
+    hid_t dset = H5Dcreate2(f, dset_path, H5T_IEEE_F32LE, space,
                             H5P_DEFAULT, (dcpl >= 0 ? dcpl : H5P_DEFAULT), H5P_DEFAULT);
 
     if (dcpl >= 0)
@@ -1230,7 +1247,10 @@ static int write_parallel_files_2d(const InputGridSpec *g,
     {
         dxpl_local = H5Pcreate(H5P_DATASET_XFER);
         if (dxpl_local >= 0)
-            (void)H5Pset_dxpl_mpio(dxpl_local, H5FD_MPIO_COLLECTIVE);
+            /* Independent I/O: each rank writes its own contiguous slab without
+               a global barrier per H5Dwrite call. Faster than collective for
+               the regular slab-per-rank access pattern used here. */
+            (void)H5Pset_dxpl_mpio(dxpl_local, H5FD_MPIO_INDEPENDENT);
         dxpl = (dxpl_local >= 0) ? dxpl_local : H5P_DEFAULT;
     }
 #endif
@@ -1252,12 +1272,12 @@ static int write_parallel_files_2d(const InputGridSpec *g,
 
     size_t block_cap = (t_chunk < 1) ? 1 : t_chunk;
 
-    double *Ex_blk = (double *)malloc(block_cap * a1_nloc * sizeof(double));
-    double *Ey_blk = (double *)malloc(block_cap * a1_nloc * sizeof(double));
-    double *Ez_blk = (double *)malloc(block_cap * a1_nloc * sizeof(double));
-    double *Ax_blk = compute_A ? (double *)malloc(block_cap * a1_nloc * sizeof(double)) : NULL;
-    double *Ay_blk = compute_A ? (double *)malloc(block_cap * a1_nloc * sizeof(double)) : NULL;
-    double *Az_blk = compute_A ? (double *)malloc(block_cap * a1_nloc * sizeof(double)) : NULL;
+    float *Ex_blk = (float *)malloc(block_cap * a1_nloc * sizeof(float));
+    float *Ey_blk = (float *)malloc(block_cap * a1_nloc * sizeof(float));
+    float *Ez_blk = (float *)malloc(block_cap * a1_nloc * sizeof(float));
+    float *Ax_blk = compute_A ? (float *)malloc(block_cap * a1_nloc * sizeof(float)) : NULL;
+    float *Ay_blk = compute_A ? (float *)malloc(block_cap * a1_nloc * sizeof(float)) : NULL;
+    float *Az_blk = compute_A ? (float *)malloc(block_cap * a1_nloc * sizeof(float)) : NULL;
 
     if (!Ex_blk || !Ey_blk || !Ez_blk || (compute_A && (!Ax_blk || !Ay_blk || !Az_blk)))
         return 21;
@@ -1270,6 +1290,9 @@ static int write_parallel_files_2d(const InputGridSpec *g,
         const double t = g->t_min + (double)it * g->dt;
 
         ttmp0 = now_s(comm);
+#ifdef _OPENMP
+        #pragma omp parallel for schedule(static)
+#endif
         for (size_t ia = 0; ia < a1_nloc; ++ia)
         {
             const size_t ig = a1_i0 + ia;
@@ -1314,14 +1337,28 @@ static int write_parallel_files_2d(const InputGridSpec *g,
             }
         }
 
-        memcpy(Ex_blk + (size_t)nb * a1_nloc, Ex_line, a1_nloc * sizeof(double));
-        memcpy(Ey_blk + (size_t)nb * a1_nloc, Ey_line, a1_nloc * sizeof(double));
-        memcpy(Ez_blk + (size_t)nb * a1_nloc, Ez_line, a1_nloc * sizeof(double));
+        {
+            float *dst_ex = Ex_blk + (size_t)nb * a1_nloc;
+            float *dst_ey = Ey_blk + (size_t)nb * a1_nloc;
+            float *dst_ez = Ez_blk + (size_t)nb * a1_nloc;
+            for (size_t _k = 0; _k < a1_nloc; ++_k)
+            {
+                dst_ex[_k] = (float)Ex_line[_k];
+                dst_ey[_k] = (float)Ey_line[_k];
+                dst_ez[_k] = (float)Ez_line[_k];
+            }
+        }
         if (compute_A)
         {
-            memcpy(Ax_blk + (size_t)nb * a1_nloc, Ax_line, a1_nloc * sizeof(double));
-            memcpy(Ay_blk + (size_t)nb * a1_nloc, Ay_line, a1_nloc * sizeof(double));
-            memcpy(Az_blk + (size_t)nb * a1_nloc, Az_line, a1_nloc * sizeof(double));
+            float *dst_ax = Ax_blk + (size_t)nb * a1_nloc;
+            float *dst_ay = Ay_blk + (size_t)nb * a1_nloc;
+            float *dst_az = Az_blk + (size_t)nb * a1_nloc;
+            for (size_t _k = 0; _k < a1_nloc; ++_k)
+            {
+                dst_ax[_k] = (float)Ax_line[_k];
+                dst_ay[_k] = (float)Ay_line[_k];
+                dst_az[_k] = (float)Az_line[_k];
+            }
         }
         nb++;
         ttmp1 = now_s(comm);
@@ -1354,7 +1391,7 @@ static int write_parallel_files_2d(const InputGridSpec *g,
             H5Sclose(mspace);                                                          \
             return 32;                                                                 \
         }                                                                              \
-        if (H5Dwrite((DSET), H5T_NATIVE_DOUBLE, mspace, fspace, dxpl, (BUF)) < 0)      \
+        if (H5Dwrite((DSET), H5T_NATIVE_FLOAT, mspace, fspace, dxpl, (BUF)) < 0)       \
         {                                                                              \
             H5Sclose(fspace);                                                          \
             H5Sclose(mspace);                                                          \
@@ -1508,7 +1545,10 @@ static int write_parallel_files_3d(const InputGridSpec *g,
     {
         dxpl_local = H5Pcreate(H5P_DATASET_XFER);
         if (dxpl_local >= 0)
-            (void)H5Pset_dxpl_mpio(dxpl_local, H5FD_MPIO_COLLECTIVE);
+            /* Independent I/O: each rank writes its own contiguous slab without
+               a global barrier per H5Dwrite call. Faster than collective for
+               the regular slab-per-rank access pattern used here. */
+            (void)H5Pset_dxpl_mpio(dxpl_local, H5FD_MPIO_INDEPENDENT);
         dxpl = (dxpl_local >= 0) ? dxpl_local : H5P_DEFAULT;
     }
 #endif
@@ -1531,12 +1571,12 @@ static int write_parallel_files_3d(const InputGridSpec *g,
 
     size_t block_cap = (t_chunk < 1) ? 1 : t_chunk;
 
-    double *Ex_blk = (double *)malloc(block_cap * plane * sizeof(double));
-    double *Ey_blk = (double *)malloc(block_cap * plane * sizeof(double));
-    double *Ez_blk = (double *)malloc(block_cap * plane * sizeof(double));
-    double *Ax_blk = compute_A ? (double *)malloc(block_cap * plane * sizeof(double)) : NULL;
-    double *Ay_blk = compute_A ? (double *)malloc(block_cap * plane * sizeof(double)) : NULL;
-    double *Az_blk = compute_A ? (double *)malloc(block_cap * plane * sizeof(double)) : NULL;
+    float *Ex_blk = (float *)malloc(block_cap * plane * sizeof(float));
+    float *Ey_blk = (float *)malloc(block_cap * plane * sizeof(float));
+    float *Ez_blk = (float *)malloc(block_cap * plane * sizeof(float));
+    float *Ax_blk = compute_A ? (float *)malloc(block_cap * plane * sizeof(float)) : NULL;
+    float *Ay_blk = compute_A ? (float *)malloc(block_cap * plane * sizeof(float)) : NULL;
+    float *Az_blk = compute_A ? (float *)malloc(block_cap * plane * sizeof(float)) : NULL;
 
     if (!Ex_blk || !Ey_blk || !Ez_blk || (compute_A && (!Ax_blk || !Ay_blk || !Az_blk)))
         return 21;
@@ -1548,14 +1588,16 @@ static int write_parallel_files_3d(const InputGridSpec *g,
     {
         const double t = g->t_min + (double)it * g->dt;
         ttmp0 = now_s(comm);
-        /* fill local slab */
+        /* fill local slab — loop is embarrassingly parallel: each (i1loc, i2)
+           writes to a unique idx and reads only from const pulse/grid data. */
+#ifdef _OPENMP
+        #pragma omp parallel for schedule(static) collapse(2)
+#endif
         for (size_t i1loc = 0; i1loc < a1_nloc; ++i1loc)
-        {
-            const size_t i1g = a1_i0 + i1loc;
-            const double a1 = g->ax1_min + (double)i1g * g->dx1;
-
             for (int i2 = 0; i2 < g->ax2_n; ++i2)
             {
+                const size_t i1g = a1_i0 + i1loc;
+                const double a1 = g->ax1_min + (double)i1g * g->dx1;
                 const double a2 = g->ax2_min + (double)i2 * g->dx2;
 
                 double r[3];
@@ -1569,7 +1611,6 @@ static int write_parallel_files_3d(const InputGridSpec *g,
                 Ey[idx] = E[1];
                 Ez[idx] = E[2];
             }
-        }
 
         if (compute_A)
         {
@@ -1599,14 +1640,28 @@ static int write_parallel_files_3d(const InputGridSpec *g,
             }
         }
 
-        memcpy(Ex_blk + (size_t)nb * plane, Ex, plane * sizeof(double));
-        memcpy(Ey_blk + (size_t)nb * plane, Ey, plane * sizeof(double));
-        memcpy(Ez_blk + (size_t)nb * plane, Ez, plane * sizeof(double));
+        {
+            float *dst_ex = Ex_blk + (size_t)nb * plane;
+            float *dst_ey = Ey_blk + (size_t)nb * plane;
+            float *dst_ez = Ez_blk + (size_t)nb * plane;
+            for (size_t _k = 0; _k < plane; ++_k)
+            {
+                dst_ex[_k] = (float)Ex[_k];
+                dst_ey[_k] = (float)Ey[_k];
+                dst_ez[_k] = (float)Ez[_k];
+            }
+        }
         if (compute_A)
         {
-            memcpy(Ax_blk + (size_t)nb * plane, Ax, plane * sizeof(double));
-            memcpy(Ay_blk + (size_t)nb * plane, Ay, plane * sizeof(double));
-            memcpy(Az_blk + (size_t)nb * plane, Az, plane * sizeof(double));
+            float *dst_ax = Ax_blk + (size_t)nb * plane;
+            float *dst_ay = Ay_blk + (size_t)nb * plane;
+            float *dst_az = Az_blk + (size_t)nb * plane;
+            for (size_t _k = 0; _k < plane; ++_k)
+            {
+                dst_ax[_k] = (float)Ax[_k];
+                dst_ay[_k] = (float)Ay[_k];
+                dst_az[_k] = (float)Az[_k];
+            }
         }
         nb++;
         ttmp1 = now_s(comm);
@@ -1637,7 +1692,7 @@ static int write_parallel_files_3d(const InputGridSpec *g,
             H5Sclose(mspace);                                                          \
             return 32;                                                                 \
         }                                                                              \
-        if (H5Dwrite((DSET), H5T_NATIVE_DOUBLE, mspace, fspace, dxpl, (BUF)) < 0)      \
+        if (H5Dwrite((DSET), H5T_NATIVE_FLOAT, mspace, fspace, dxpl, (BUF)) < 0)       \
         {                                                                              \
             H5Sclose(fspace);                                                          \
             H5Sclose(mspace);                                                          \
@@ -1849,7 +1904,7 @@ int field_cache_run(const InputSimSpec *sim,
         /* --- report buffering policy (same as 3D, adapted) --- */
         {
             uint64_t bytes_per_block =
-                (uint64_t)ncomp_write * (uint64_t)plane * (uint64_t)t_chunk * (uint64_t)sizeof(double);
+                (uint64_t)ncomp_write * (uint64_t)plane * (uint64_t)t_chunk * (uint64_t)sizeof(float);
 
             int nflush = (g->t_n + (int)t_chunk - 1) / (int)t_chunk;
 
@@ -1906,7 +1961,7 @@ int field_cache_run(const InputSimSpec *sim,
         /* --- report buffering policy --- */
         {
             uint64_t bytes_per_block =
-                (uint64_t)ncomp_write * (uint64_t)plane * (uint64_t)t_chunk * (uint64_t)sizeof(double);
+                (uint64_t)ncomp_write * (uint64_t)plane * (uint64_t)t_chunk * (uint64_t)sizeof(float);
 
             /* these are the big allocations in write_parallel_files_3d:
                Ex_blk/Ey_blk/Ez_blk (+ Ax_blk/Ay_blk/Az_blk if compute_A) */

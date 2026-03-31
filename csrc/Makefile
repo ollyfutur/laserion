@@ -35,6 +35,7 @@ CSTD   := -std=c17
 WARN   := -Wall -Wextra -pedantic
 OPT    := -O3
 ALIAS  := -fstrict-aliasing
+OMP    := -fopenmp
 
 # === OS / architecture detection =========================================
 
@@ -55,7 +56,7 @@ else
     ARCH_FLAGS = -march=native
 endif
 
-CFLAGS   := $(CSTD) $(WARN) $(OPT) $(ALIAS) $(ARCH_FLAGS)
+CFLAGS   := $(CSTD) $(WARN) $(OPT) $(ALIAS) $(ARCH_FLAGS) $(OMP)
 CPPFLAGS := -Iinclude $(TOML_FLAGS)
 
 LDFLAGS :=
