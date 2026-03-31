@@ -55,6 +55,19 @@ typedef struct
     double A_tmin_fs;
     double A_tmax_fs;
     double A_dt_fs;
+
+    /*
+     * Maxwell correction: adds the longitudinal field component E_∥ along k_hat
+     * required by Gauss's law (∇·E = 0) in the paraxial approximation:
+     *
+     *   E_∥ = -(1/k) ∇_⊥ · E_⊥^(q)
+     *
+     * where E_⊥^(q) is the transverse field with carrier phase shifted by π/2
+     * (quadrature component), and ∇_⊥ is computed via central finite differences
+     * with step size maxwell_fd_h_um (0 = auto: wavelength/100).
+     */
+    int use_maxwell_correction;
+    double maxwell_fd_h_um; /* 0 = auto */
 } SinglePulse;
 
 /* Initialise SinglePulse. Returns 0 on success. */
@@ -71,6 +84,9 @@ int SinglePulse_init(SinglePulse *p,
 
 /* Enable/define parameters for A(t,r) numerical integration. */
 void SinglePulse_enable_A(SinglePulse *p, double tmin_fs, double tmax_fs, double dt_fs);
+
+/* Enable Maxwell correction. fd_h_um: step size for finite differences (0 = auto). */
+void SinglePulse_enable_maxwell_correction(SinglePulse *p, double fd_h_um);
 
 /* MultiPulse: sum of multiple LaserPulse* */
 typedef struct

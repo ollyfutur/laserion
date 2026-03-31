@@ -108,6 +108,9 @@ extern "C"
         // Jones params (only meaningful for POL_JONES)
         double p1, p2, delta;
         bool has_jones;
+
+        // Maxwell correction: add longitudinal E field to satisfy ∇·E = 0
+        bool maxwell_correction;
     } InputLaserSpec;
 
     typedef struct

@@ -176,6 +176,11 @@ int BuiltLasers_build(const InputSimSpec *sim, BuiltLasers *out)
             return 40 + rc;
 
         out->pulse_ptrs[i] = (const LaserPulse *)&out->single[i];
+
+        /* Maxwell correction (optional): longitudinal E field for ∇·E = 0. */
+        if (in->maxwell_correction)
+            SinglePulse_enable_maxwell_correction(&out->single[i], 0.0 /* auto h */);
+
         /* Enable numeric A(t,r) integration so field_cache can write Ax/Ay/Az. */
         {
             const double tmin_fs = sim->grid.t_min;

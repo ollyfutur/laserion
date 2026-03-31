@@ -71,13 +71,16 @@ static double singlepulse_t_eff(const SinglePulse *p,
 
 /* ---------------- LaserPulse vtable: E and A ---------------- */
 
-static void singlepulse_E_impl(const LaserPulse *base,
+/*
+ * Core E evaluation with an extra phase offset added to the carrier.
+ * Used directly for E (extra_phase=0) and for the quadrature field (extra_phase=π/2).
+ */
+static void singlepulse_E_core(const SinglePulse *p,
                                double t_fs,
                                const double r_lab[3],
+                               double extra_phase,
                                double out_E[3])
 {
-    const SinglePulse *p = (const SinglePulse *)base;
-
     double r_beam[3];
     singlepulse_to_beam_frame(p, r_lab, r_beam);
 
@@ -87,7 +90,7 @@ static void singlepulse_E_impl(const LaserPulse *base,
     double env_r = TransverseProfile_eval(p->transverse, r_beam, p->wavelength_um);
 
     double phi_profile = TransverseProfile_phase(p->transverse, r_beam, p->wavelength_um);
-    double phase = p->omega_rad_per_fs * t_eff + (phi_profile + p->phase0);
+    double phase = p->omega_rad_per_fs * t_eff + (phi_profile + p->phase0) + extra_phase;
 
     double pol_vec[3];
     Polarization_vector(&p->polarization, phase, pol_vec);
@@ -97,6 +100,68 @@ static void singlepulse_E_impl(const LaserPulse *base,
     out_E[0] = scale * pol_vec[0];
     out_E[1] = scale * pol_vec[1];
     out_E[2] = scale * pol_vec[2];
+}
+
+static void singlepulse_E_impl(const LaserPulse *base,
+                               double t_fs,
+                               const double r_lab[3],
+                               double out_E[3])
+{
+    const SinglePulse *p = (const SinglePulse *)base;
+
+    singlepulse_E_core(p, t_fs, r_lab, 0.0, out_E);
+
+    if (!p->use_maxwell_correction)
+        return;
+
+    /*
+     * Paraxial Maxwell correction: add longitudinal component E_∥ along k_hat
+     * to satisfy ∇·E = 0 in vacuum.
+     *
+     *   E_∥ = -(1/k) (∂E_qx'/∂x' + ∂E_qy'/∂y')
+     *
+     * where E_q = E evaluated with carrier phase shifted by π/2 (quadrature
+     * field — the Hilbert transform of E in the slowly-varying-envelope sense),
+     * x' and y' are the beam-frame transverse coordinates (e_xb, e_yb),
+     * and k = 2π/λ.  The transverse divergence is computed via central
+     * finite differences with step h in the beam-frame transverse plane.
+     *
+     * Note: shifting along e_xb or e_yb does not change z' = (r-r_start)·k_hat
+     * (since e_xb ⊥ k_hat), so the retarded time is unaffected by the shift —
+     * only the transverse profile contributes to the gradient, as expected.
+     */
+    const double pi = 3.14159265358979323846;
+    const double k  = 2.0 * pi / p->wavelength_um;
+    const double h  = p->maxwell_fd_h_um > 0.0
+                          ? p->maxwell_fd_h_um
+                          : p->wavelength_um * 0.01;
+
+    /* Offsets along beam-frame transverse axes */
+    double r_px[3], r_mx[3], r_py[3], r_my[3];
+    for (int j = 0; j < 3; ++j)
+    {
+        r_px[j] = r_lab[j] + h * p->e_xb[j];
+        r_mx[j] = r_lab[j] - h * p->e_xb[j];
+        r_py[j] = r_lab[j] + h * p->e_yb[j];
+        r_my[j] = r_lab[j] - h * p->e_yb[j];
+    }
+
+    /* Quadrature field (phase + π/2) at the four offset points */
+    double Eq_px[3], Eq_mx[3], Eq_py[3], Eq_my[3];
+    singlepulse_E_core(p, t_fs, r_px, pi * 0.5, Eq_px);
+    singlepulse_E_core(p, t_fs, r_mx, pi * 0.5, Eq_mx);
+    singlepulse_E_core(p, t_fs, r_py, pi * 0.5, Eq_py);
+    singlepulse_E_core(p, t_fs, r_my, pi * 0.5, Eq_my);
+
+    /* Central differences: ∂E_qx'/∂x' and ∂E_qy'/∂y' */
+    double dEqx_dx = (vdot(Eq_px, p->e_xb) - vdot(Eq_mx, p->e_xb)) / (2.0 * h);
+    double dEqy_dy = (vdot(Eq_py, p->e_yb) - vdot(Eq_my, p->e_yb)) / (2.0 * h);
+
+    double E_long = -(1.0 / k) * (dEqx_dx + dEqy_dy);
+
+    out_E[0] += E_long * p->k_hat[0];
+    out_E[1] += E_long * p->k_hat[1];
+    out_E[2] += E_long * p->k_hat[2];
 }
 
 /*
@@ -257,6 +322,10 @@ int SinglePulse_init(SinglePulse *p,
     p->A_tmax_fs = 0.0;
     p->A_dt_fs = 0.0;
 
+    /* Maxwell correction disabled by default */
+    p->use_maxwell_correction = 0;
+    p->maxwell_fd_h_um = 0.0;
+
     return 0;
 }
 
@@ -266,6 +335,12 @@ void SinglePulse_enable_A(SinglePulse *p, double tmin_fs, double tmax_fs, double
     p->A_tmin_fs = tmin_fs;
     p->A_tmax_fs = tmax_fs;
     p->A_dt_fs = dt_fs;
+}
+
+void SinglePulse_enable_maxwell_correction(SinglePulse *p, double fd_h_um)
+{
+    p->use_maxwell_correction = 1;
+    p->maxwell_fd_h_um = fd_h_um; /* 0 = auto (wavelength/100 at eval time) */
 }
 
 /* ---------------- MultiPulse implementation ---------------- */

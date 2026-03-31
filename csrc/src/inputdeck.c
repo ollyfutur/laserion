@@ -1166,6 +1166,8 @@ static void laser_defaults(InputLaserSpec *L)
     L->p1 = 1.0;
     L->p2 = 0.0;
     L->delta = 0.0;
+
+    L->maxwell_correction = false;
 }
 
 /* -------------------------- TOML getters -------------------------- */
@@ -1561,6 +1563,8 @@ static int parse_lasers(toml_table_t *root, InputLaserDeck *deck)
         }
 
         L.has_jones = (L.polarization == POL_JONES);
+
+        (void)get_bool(tl, "maxwell_correction", &L.maxwell_correction);
 
         // If user provides any Jones param but didn't choose Jones polarization → ignore
         if ((have_p1 || have_p2 || have_delta) && L.polarization != POL_JONES)
