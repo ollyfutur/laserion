@@ -1,0 +1,71 @@
+# =====================================================================
+#  Example 1 — Helium ionized by a tightly focused pulse.
+#
+#  1D grid ALONG the propagation axis z, sampled on-axis (x=y=0). The
+#  Gaussian beam's on-axis amplitude ~ w0/w(z) peaks at the focus (z=zf)
+#  and falls off before/after it, so with a small w0 the ionization
+#  varies strongly along z.
+#
+#  Helium has only two levels (He -> He+ -> He2+), which keeps the
+#  ionization picture simple.
+#
+#  Run:   laserion            (or  mpirun -n 4 laserion)
+#  Plot:  open inputdeck/plots.ipynb in VS Code or Jupyter
+#
+#  Diagnostics:
+#    MS/field/       laser field vs t at z = -40, 0, +40 um
+#                    (before focus / at focus / after focus)
+#    MS/ioniz_frac/  He+ and He2+ fraction along z
+# =====================================================================
+
+[run]
+working_dir      = "."
+gas              = "He"
+memory_total_gib = 2
+
+[field_cache]
+mode = "auto"
+
+[grid]
+t_min        = -240.0
+t_max        =  240.0
+dt           =  0.04
+ax1_min      =  -60.0
+ax1_max      =   60.0
+dx1          =   1.0        # 121 planes along z
+spatial_axes = "z"
+fixed.x      = 0.0
+fixed.y      = 0.0
+
+[[laser]]
+E0              = 250.0      # GV/m at focus
+wavelength      = 0.8
+phase0          = 0.0
+k_vec           = [0.0, 0.0, 1.0]
+r_start         = [0.0, 0.0, 0.0]
+temporal_type   = "gaussian"
+tau             = 10.0
+transverse_type = "gaussian"
+w0              = 2.0        # small waist -> Rayleigh length z0 = pi w0^2/lambda ~ 15.7 um
+zf              = 0.0        # focus at z = 0
+polarization    = "linear"
+angle           = 0.0
+
+# --- three field snapshots: before focus, at focus, after focus ---
+[[field_diag]]
+axes       = "t"
+components = ["Ex"]
+pos_z      = -40.0
+
+[[field_diag]]
+axes       = "t"
+components = ["Ex"]
+pos_z      = 0.0
+
+[[field_diag]]
+axes       = "t"
+components = ["Ex"]
+pos_z      = 40.0
+
+# --- ionization fraction along z ---
+[ionization_frac]
