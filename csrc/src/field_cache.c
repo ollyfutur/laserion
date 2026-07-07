@@ -1255,10 +1255,10 @@ static int write_parallel_files_2d(const InputGridSpec *g,
     }
 #endif
 
-    /* per-time scratch */
-    double *Ex_line = (double *)malloc(a1_nloc * sizeof(double));
-    double *Ey_line = (double *)malloc(a1_nloc * sizeof(double));
-    double *Ez_line = (double *)malloc(a1_nloc * sizeof(double));
+    /* per-plane persistent A-integration state. Each thread owns a disjoint
+       set of planes, so these arrays are accessed without conflict and the
+       recurrence stays sequential in time within each plane (and across the
+       block boundaries below). */
     double *Ax_line = compute_A ? (double *)malloc(a1_nloc * sizeof(double)) : NULL;
     double *Ay_line = compute_A ? (double *)malloc(a1_nloc * sizeof(double)) : NULL;
     double *Az_line = compute_A ? (double *)malloc(a1_nloc * sizeof(double)) : NULL;
@@ -1266,8 +1266,7 @@ static int write_parallel_files_2d(const InputGridSpec *g,
     double *Ey_prev = compute_A ? (double *)malloc(a1_nloc * sizeof(double)) : NULL;
     double *Ez_prev = compute_A ? (double *)malloc(a1_nloc * sizeof(double)) : NULL;
 
-    if (!Ex_line || !Ey_line || !Ez_line ||
-        (compute_A && (!Ax_line || !Ay_line || !Az_line || !Ex_prev || !Ey_prev || !Ez_prev)))
+    if (compute_A && (!Ax_line || !Ay_line || !Az_line || !Ex_prev || !Ey_prev || !Ez_prev))
         return 20;
 
     size_t block_cap = (t_chunk < 1) ? 1 : t_chunk;
@@ -1282,16 +1281,33 @@ static int write_parallel_files_2d(const InputGridSpec *g,
     if (!Ex_blk || !Ey_blk || !Ez_blk || (compute_A && (!Ax_blk || !Ay_blk || !Az_blk)))
         return 21;
 
-    int t0 = 0;
-    int nb = 0;
+    const double dt = g->dt;
 
-    for (int it = 0; it < g->t_n; ++it)
+    /* March over time in blocks. The OpenMP team is forked ONCE per block (not
+       once per timestep): each thread owns a disjoint slab of planes and walks
+       the whole block's time range for those planes, advancing the A-integration
+       recurrence per plane. This keeps a single fork/join per block and preserves
+       the [t, ax1] block layout the writer below expects. Whether the plane loop
+       is actually threaded is gated below (see MIN_PLANES_PER_THREAD) to avoid
+       false sharing on small grids. */
+    for (int t0 = 0; t0 < g->t_n; )
     {
-        const double t = g->t_min + (double)it * g->dt;
+        int nb = (int)block_cap;
+        if (t0 + nb > g->t_n)
+            nb = g->t_n - t0;
 
         ttmp0 = now_s(comm);
 #ifdef _OPENMP
-        #pragma omp parallel for schedule(static)
+        /* Only thread the plane loop when each thread can own a large enough,
+           contiguous slab of planes. The block is row-major [t, ax1] float, so
+           threads that split a short ax1 row share cache lines on every write
+           (false sharing) — which on small grids is far more expensive than the
+           work itself and gets strictly worse with more threads. Require at
+           least MIN_PLANES_PER_THREAD (>= 2 cache lines of float) per thread;
+           otherwise run the region serially. */
+        const size_t MIN_PLANES_PER_THREAD = 32;
+        #pragma omp parallel for schedule(static) \
+            if (a1_nloc >= MIN_PLANES_PER_THREAD * (size_t)omp_get_max_threads())
 #endif
         for (size_t ia = 0; ia < a1_nloc; ++ia)
         {
@@ -1301,70 +1317,43 @@ static int write_parallel_files_2d(const InputGridSpec *g,
             double r[3];
             set_r_from_axes(g, a1, 0.0, r);
 
-            double E[3];
-            LaserPulse_E(pulse, t, r, E);
-
-            Ex_line[ia] = E[0];
-            Ey_line[ia] = E[1];
-            Ez_line[ia] = E[2];
-        }
-
-        if (compute_A)
-        {
-            if (it == 0)
+            for (int lit = 0; lit < nb; ++lit)
             {
-                for (size_t ia = 0; ia < a1_nloc; ++ia)
+                const int it = t0 + lit;
+                const double t = g->t_min + (double)it * g->dt;
+
+                double E[3];
+                LaserPulse_E(pulse, t, r, E);
+
+                const size_t off = (size_t)lit * a1_nloc + ia;
+                Ex_blk[off] = (float)E[0];
+                Ey_blk[off] = (float)E[1];
+                Ez_blk[off] = (float)E[2];
+
+                if (compute_A)
                 {
-                    Ax_line[ia] = Ay_line[ia] = Az_line[ia] = 0.0;
-                    Ex_prev[ia] = Ex_line[ia];
-                    Ey_prev[ia] = Ey_line[ia];
-                    Ez_prev[ia] = Ez_line[ia];
+                    if (it == 0)
+                        Ax_line[ia] = Ay_line[ia] = Az_line[ia] = 0.0;
+                    else
+                    {
+                        Ax_line[ia] -= 0.5 * (Ex_prev[ia] + E[0]) * dt;
+                        Ay_line[ia] -= 0.5 * (Ey_prev[ia] + E[1]) * dt;
+                        Az_line[ia] -= 0.5 * (Ez_prev[ia] + E[2]) * dt;
+                    }
+
+                    Ax_blk[off] = (float)Ax_line[ia];
+                    Ay_blk[off] = (float)Ay_line[ia];
+                    Az_blk[off] = (float)Az_line[ia];
+
+                    Ex_prev[ia] = E[0];
+                    Ey_prev[ia] = E[1];
+                    Ez_prev[ia] = E[2];
                 }
             }
-            else
-            {
-                const double dt = g->dt;
-                for (size_t ia = 0; ia < a1_nloc; ++ia)
-                {
-                    Ax_line[ia] -= 0.5 * (Ex_prev[ia] + Ex_line[ia]) * dt;
-                    Ay_line[ia] -= 0.5 * (Ey_prev[ia] + Ey_line[ia]) * dt;
-                    Az_line[ia] -= 0.5 * (Ez_prev[ia] + Ez_line[ia]) * dt;
-
-                    Ex_prev[ia] = Ex_line[ia];
-                    Ey_prev[ia] = Ey_line[ia];
-                    Ez_prev[ia] = Ez_line[ia];
-                }
-            }
         }
-
-        {
-            float *dst_ex = Ex_blk + (size_t)nb * a1_nloc;
-            float *dst_ey = Ey_blk + (size_t)nb * a1_nloc;
-            float *dst_ez = Ez_blk + (size_t)nb * a1_nloc;
-            for (size_t _k = 0; _k < a1_nloc; ++_k)
-            {
-                dst_ex[_k] = (float)Ex_line[_k];
-                dst_ey[_k] = (float)Ey_line[_k];
-                dst_ez[_k] = (float)Ez_line[_k];
-            }
-        }
-        if (compute_A)
-        {
-            float *dst_ax = Ax_blk + (size_t)nb * a1_nloc;
-            float *dst_ay = Ay_blk + (size_t)nb * a1_nloc;
-            float *dst_az = Az_blk + (size_t)nb * a1_nloc;
-            for (size_t _k = 0; _k < a1_nloc; ++_k)
-            {
-                dst_ax[_k] = (float)Ax_line[_k];
-                dst_ay[_k] = (float)Ay_line[_k];
-                dst_az[_k] = (float)Az_line[_k];
-            }
-        }
-        nb++;
         ttmp1 = now_s(comm);
         t_compute_local += (ttmp1 - ttmp0);
 
-        if ((size_t)nb == block_cap || it == g->t_n - 1)
         {
             ttmp0 = now_s(comm);
 
@@ -1418,15 +1407,11 @@ static int write_parallel_files_2d(const InputGridSpec *g,
             t_write_local += (ttmp1 - ttmp0);
 
             t0 += nb;
-            nb = 0;
         }
     }
 
     ttmp0 = now_s(comm);
 
-    free(Ex_line);
-    free(Ey_line);
-    free(Ez_line);
     free(Ax_line);
     free(Ay_line);
     free(Az_line);
