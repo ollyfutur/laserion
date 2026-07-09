@@ -686,49 +686,129 @@ static int h5_find_first_dataset(hid_t file, char name_out[256])
     return 2;
 }
 
-static int h5_open_component_dataset(const char *path,
-                                     const char *dset_name_guess,
-                                     hid_t *file_out,
-                                     hid_t *dset_out,
-                                     hid_t *space_out)
+/* ---------------- open-once cache reader ---------------- */
+
+typedef struct
 {
-    hid_t f = H5Fopen(path, H5F_ACC_RDONLY, H5P_DEFAULT);
-    if (f < 0)
+    hid_t f, dset, fspace;
+    int rank;
+    hsize_t dims[3];
+    char dim_sem[3];
+} CacheComp;
+
+static void cachecomp_close(CacheComp *cc)
+{
+    if (!cc)
+        return;
+    if (cc->fspace >= 0)
+        H5Sclose(cc->fspace);
+    if (cc->dset >= 0)
+        H5Dclose(cc->dset);
+    if (cc->f >= 0)
+        H5Fclose(cc->f);
+    cc->f = cc->dset = cc->fspace = -1;
+}
+
+static int cachecomp_open(CacheComp *cc,
+                          const char *cache_dir,
+                          const char *comp2, /* "Ex", "Ax", ... */
+                          const InputGridSpec *g,
+                          size_t Nt)
+{
+    cc->f = cc->dset = cc->fspace = -1;
+    cc->rank = 0;
+
+    char path[512];
+    snprintf(path, sizeof(path), "%s/%s.h5", cache_dir, comp2);
+
+    cc->f = H5Fopen(path, H5F_ACC_RDONLY, H5P_DEFAULT);
+    if (cc->f < 0)
         return 1;
 
-    hid_t d = -1;
-
-    if (dset_name_guess && dset_name_guess[0])
-        d = H5Dopen2(f, dset_name_guess, H5P_DEFAULT);
-
-    if (d < 0)
+    cc->dset = H5Dopen2(cc->f, comp2, H5P_DEFAULT);
+    if (cc->dset < 0)
     {
         char first[256];
-        if (h5_find_first_dataset(f, first) != 0)
+        if (h5_find_first_dataset(cc->f, first) != 0)
         {
-            H5Fclose(f);
+            cachecomp_close(cc);
             return 2;
         }
-        d = H5Dopen2(f, first, H5P_DEFAULT);
-        if (d < 0)
+        cc->dset = H5Dopen2(cc->f, first, H5P_DEFAULT);
+        if (cc->dset < 0)
         {
-            H5Fclose(f);
+            cachecomp_close(cc);
             return 3;
         }
     }
 
-    hid_t s = H5Dget_space(d);
-    if (s < 0)
+    cc->fspace = H5Dget_space(cc->dset);
+    if (cc->fspace < 0)
     {
-        H5Dclose(d);
-        H5Fclose(f);
+        cachecomp_close(cc);
         return 4;
     }
 
-    *file_out = f;
-    *dset_out = d;
-    *space_out = s;
+    cc->rank = H5Sget_simple_extent_ndims(cc->fspace);
+    if (cc->rank < 2 || cc->rank > 3)
+    {
+        cachecomp_close(cc);
+        return 5;
+    }
+
+    if (H5Sget_simple_extent_dims(cc->fspace, cc->dims, NULL) != cc->rank)
+    {
+        cachecomp_close(cc);
+        return 6;
+    }
+
+    if (infer_dim_semantics(cc->rank, cc->dims, Nt,
+                            (size_t)g->ax1_n, (size_t)g->ax2_n,
+                            g->has_ax2 ? 1 : 0, cc->dim_sem) != 0)
+    {
+        cachecomp_close(cc);
+        return 7;
+    }
+
     return 0;
+}
+
+static int cachecomp_read_point(const CacheComp *cc, int i1, int i2, double *out_t, size_t Nt)
+{
+    hsize_t start[3] = {0, 0, 0};
+    hsize_t count[3] = {1, 1, 1};
+
+    for (int k = 0; k < cc->rank; ++k)
+    {
+        if (cc->dim_sem[k] == 't')
+        {
+            start[k] = 0;
+            count[k] = (hsize_t)Nt;
+        }
+        else if (cc->dim_sem[k] == '1')
+        {
+            start[k] = (hsize_t)i1;
+            count[k] = 1;
+        }
+        else if (cc->dim_sem[k] == '2')
+        {
+            start[k] = (hsize_t)i2;
+            count[k] = 1;
+        }
+    }
+
+    if (H5Sselect_hyperslab(cc->fspace, H5S_SELECT_SET, start, NULL, count, NULL) < 0)
+        return 1;
+
+    hsize_t mdims[1] = {(hsize_t)Nt};
+    hid_t ms = H5Screate_simple(1, mdims, NULL);
+    if (ms < 0)
+        return 2;
+
+    const herr_t st = H5Dread(cc->dset, H5T_NATIVE_DOUBLE, ms, cc->fspace, H5P_DEFAULT, out_t);
+    H5Sclose(ms);
+
+    return (st < 0) ? 3 : 0;
 }
 
 static int clamp_index(double x, double xmin, double xmax, int n)
@@ -777,108 +857,6 @@ static void map_r_to_spatial_indices(const InputGridSpec *g,
         v2 = z;
 
     *i2_out = clamp_index(v2, g->ax2_min, g->ax2_max, g->ax2_n);
-}
-
-static int cache_read_component_timeseries(const InputSimSpec *sim,
-                                           const char *cache_dir,
-                                           const char *comp2, /* "Ex","Ax",... */
-                                           int i1, int i2,
-                                           double *out_t, size_t Nt)
-{
-    char path[512];
-    snprintf(path, sizeof(path), "%s/%s.h5", cache_dir, comp2);
-
-    hid_t f = -1, d = -1, s = -1;
-    int rc0 = h5_open_component_dataset(path, comp2, &f, &d, &s);
-    if (rc0 != 0)
-        return 10 + rc0;
-
-    const int nd = H5Sget_simple_extent_ndims(s);
-    if (nd < 2 || nd > 3)
-    {
-        H5Sclose(s);
-        H5Dclose(d);
-        H5Fclose(f);
-        return 20;
-    }
-
-    hsize_t dims[3] = {0, 0, 0};
-    if (H5Sget_simple_extent_dims(s, dims, NULL) != nd)
-    {
-        H5Sclose(s);
-        H5Dclose(d);
-        H5Fclose(f);
-        return 21;
-    }
-
-    const InputGridSpec *g = &sim->grid;
-
-    /* Infer which dimension is time / ax1 / ax2 by matching sizes */
-    char dim_sem[3] = {'?', '?', '?'};
-    const int irc = infer_dim_semantics(nd, dims,
-                                        (size_t)Nt,
-                                        (size_t)g->ax1_n,
-                                        (size_t)g->ax2_n,
-                                        g->has_ax2 ? 1 : 0,
-                                        dim_sem);
-    if (irc != 0)
-    {
-        H5Sclose(s);
-        H5Dclose(d);
-        H5Fclose(f);
-        return 22; /* could not infer semantics */
-    }
-
-    hsize_t start[3] = {0, 0, 0};
-    hsize_t count[3] = {1, 1, 1};
-
-    for (int k = 0; k < nd; ++k)
-    {
-        if (dim_sem[k] == 't')
-        {
-            start[k] = 0;
-            count[k] = (hsize_t)Nt;
-        }
-        else if (dim_sem[k] == '1')
-        {
-            start[k] = (hsize_t)i1;
-            count[k] = 1;
-        }
-        else if (dim_sem[k] == '2')
-        {
-            start[k] = (hsize_t)i2;
-            count[k] = 1;
-        }
-    }
-
-    if (H5Sselect_hyperslab(s, H5S_SELECT_SET, start, NULL, count, NULL) < 0)
-    {
-        H5Sclose(s);
-        H5Dclose(d);
-        H5Fclose(f);
-        return 23;
-    }
-
-    /* Memory space is always 1D [Nt] */
-    hsize_t mdims[1] = {(hsize_t)Nt};
-    hid_t ms = H5Screate_simple(1, mdims, NULL);
-    if (ms < 0)
-    {
-        H5Sclose(s);
-        H5Dclose(d);
-        H5Fclose(f);
-        return 24;
-    }
-
-    /* Let HDF5 convert float->double if needed */
-    herr_t st = H5Dread(d, H5T_NATIVE_DOUBLE, ms, s, H5P_DEFAULT, out_t);
-
-    H5Sclose(ms);
-    H5Sclose(s);
-    H5Dclose(d);
-    H5Fclose(f);
-
-    return (st < 0) ? 25 : 0;
 }
 
 /* ---------------- cache-based particle generator ---------------- */
@@ -1032,6 +1010,49 @@ int mdf_particles_run_from_cache(const InputSimSpec *sim,
         return 101;
     }
 
+    CacheComp cEx = {-1, -1, -1, 0, {0, 0, 0}, {0, 0, 0}};
+    CacheComp cEy = {-1, -1, -1, 0, {0, 0, 0}, {0, 0, 0}};
+    CacheComp cEz = {-1, -1, -1, 0, {0, 0, 0}, {0, 0, 0}};
+    CacheComp cAx = {-1, -1, -1, 0, {0, 0, 0}, {0, 0, 0}};
+    CacheComp cAy = {-1, -1, -1, 0, {0, 0, 0}, {0, 0, 0}};
+    CacheComp cAz = {-1, -1, -1, 0, {0, 0, 0}, {0, 0, 0}};
+
+    if (cachecomp_open(&cEx, cache_dir, "Ex", &sim->grid, Nt) != 0 ||
+        cachecomp_open(&cEy, cache_dir, "Ey", &sim->grid, Nt) != 0 ||
+        cachecomp_open(&cEz, cache_dir, "Ez", &sim->grid, Nt) != 0 ||
+        cachecomp_open(&cAx, cache_dir, "Ax", &sim->grid, Nt) != 0 ||
+        cachecomp_open(&cAy, cache_dir, "Ay", &sim->grid, Nt) != 0 ||
+        cachecomp_open(&cAz, cache_dir, "Az", &sim->grid, Nt) != 0)
+    {
+        cachecomp_close(&cEx);
+        cachecomp_close(&cEy);
+        cachecomp_close(&cEz);
+        cachecomp_close(&cAx);
+        cachecomp_close(&cAy);
+        cachecomp_close(&cAz);
+        free(t_fs);
+        free(x);
+        free(y);
+        free(z);
+        free(px);
+        free(py);
+        free(pz);
+        free(q);
+        free(Ex);
+        free(Ey);
+        free(Ez);
+        free(Ax);
+        free(Ay);
+        free(Az);
+        free(Eabs);
+        free(cdf);
+        free(w);
+        free(S);
+        free(dP);
+        free(P_levels);
+        return 102;
+    }
+
     size_t out_k = 0;
 
     for (long long cell = c0; cell < c1; ++cell)
@@ -1058,19 +1079,19 @@ int mdf_particles_run_from_cache(const InputSimSpec *sim,
             int i1 = 0, i2 = 0;
             map_r_to_spatial_indices(&sim->grid, xc, yc, zc, &i1, &i2);
 
-            if (cache_read_component_timeseries(sim, cache_dir, "Ex", i1, i2, Ex, Nt) != 0)
+            if (cachecomp_read_point(&cEx, i1, i2, Ex, Nt) != 0)
                 continue;
-            if (cache_read_component_timeseries(sim, cache_dir, "Ey", i1, i2, Ey, Nt) != 0)
+            if (cachecomp_read_point(&cEy, i1, i2, Ey, Nt) != 0)
                 continue;
-            if (cache_read_component_timeseries(sim, cache_dir, "Ez", i1, i2, Ez, Nt) != 0)
+            if (cachecomp_read_point(&cEz, i1, i2, Ez, Nt) != 0)
                 continue;
 
             /* A is required to produce momenta */
-            if (cache_read_component_timeseries(sim, cache_dir, "Ax", i1, i2, Ax, Nt) != 0)
+            if (cachecomp_read_point(&cAx, i1, i2, Ax, Nt) != 0)
                 continue;
-            if (cache_read_component_timeseries(sim, cache_dir, "Ay", i1, i2, Ay, Nt) != 0)
+            if (cachecomp_read_point(&cAy, i1, i2, Ay, Nt) != 0)
                 continue;
-            if (cache_read_component_timeseries(sim, cache_dir, "Az", i1, i2, Az, Nt) != 0)
+            if (cachecomp_read_point(&cAz, i1, i2, Az, Nt) != 0)
                 continue;
 
             for (size_t it = 0; it < Nt; ++it)
@@ -1157,18 +1178,18 @@ int mdf_particles_run_from_cache(const InputSimSpec *sim,
                 int i1 = 0, i2 = 0;
                 map_r_to_spatial_indices(&sim->grid, xr, yr, zr, &i1, &i2);
 
-                if (cache_read_component_timeseries(sim, cache_dir, "Ex", i1, i2, Ex, Nt) != 0)
+                if (cachecomp_read_point(&cEx, i1, i2, Ex, Nt) != 0)
                     continue;
-                if (cache_read_component_timeseries(sim, cache_dir, "Ey", i1, i2, Ey, Nt) != 0)
+                if (cachecomp_read_point(&cEy, i1, i2, Ey, Nt) != 0)
                     continue;
-                if (cache_read_component_timeseries(sim, cache_dir, "Ez", i1, i2, Ez, Nt) != 0)
+                if (cachecomp_read_point(&cEz, i1, i2, Ez, Nt) != 0)
                     continue;
 
-                if (cache_read_component_timeseries(sim, cache_dir, "Ax", i1, i2, Ax, Nt) != 0)
+                if (cachecomp_read_point(&cAx, i1, i2, Ax, Nt) != 0)
                     continue;
-                if (cache_read_component_timeseries(sim, cache_dir, "Ay", i1, i2, Ay, Nt) != 0)
+                if (cachecomp_read_point(&cAy, i1, i2, Ay, Nt) != 0)
                     continue;
-                if (cache_read_component_timeseries(sim, cache_dir, "Az", i1, i2, Az, Nt) != 0)
+                if (cachecomp_read_point(&cAz, i1, i2, Az, Nt) != 0)
                     continue;
 
                 for (size_t it = 0; it < Nt; ++it)
@@ -1239,6 +1260,13 @@ int mdf_particles_run_from_cache(const InputSimSpec *sim,
             }
         }
     }
+
+    cachecomp_close(&cEx);
+    cachecomp_close(&cEy);
+    cachecomp_close(&cEz);
+    cachecomp_close(&cAx);
+    cachecomp_close(&cAy);
+    cachecomp_close(&cAz);
 
     free(t_fs);
     free(Ex);
