@@ -8,7 +8,7 @@ BIN_DIR   := bin
 
 ##MPICC := /opt/openmpi/gcc-14.2.0/bin/mpicc
 MPICC ?= mpicc
-MPICC := /opt/openmpi/gcc-14.2.0/bin/mpicc
+#MPICC := /opt/openmpi/gcc-14.2.0/bin/mpicc
 CC    := $(MPICC)
 
 
@@ -114,6 +114,9 @@ $(TARGET): $(LIB_OBJS) $(TOML_OBJ)
 	$(CC) $(CFLAGS) $(H5_FLAGS) $^ -o $@ $(LDFLAGS) $(LDLIBS) $(H5_LINK)
 
 # ================= Convenience targets ===================================
+
+profile: clean
+	$(MAKE) CC="scorep --mpp=mpi $(CC)" all
 
 debug: OPT := -O0
 debug: ARCH_FLAGS :=
