@@ -877,25 +877,30 @@ static int create_single_dataset_file(hid_t *out_f, hid_t *out_dset,
     hid_t g_axis = H5Gcreate2(f, "AXIS", H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
     if (g_axis >= 0)
     {
+        /* OSIRIS convention: AXIS1 describes the FASTEST-varying dataset
+           dimension (dims[nd-1]), AXIS(nd) the slowest (dims[0]) -- i.e.
+           reverse of the C/row-major dims[] order. Since the on-disk layout
+           is now [ax1, (ax2,) t] with t innermost/fastest (see gdims in the
+           2D/3D writers), AXIS1 is now "t", not the spatial axis. */
         if (nd == 2)
         {
-            osiris_write_axis_dataset(g_axis, 1,
-                                      axis_name_osiris(g->ax1), axis_long_name_osiris(g->ax1),
-                                      "\\mu m", g->ax1_min, g->ax1_max);
-
-            osiris_write_axis_dataset(g_axis, 2, "t", "t", "fs", g->t_min, g->t_max);
-        }
-        else
-        {
-            osiris_write_axis_dataset(g_axis, 1,
-                                      axis_name_osiris(g->ax2), axis_long_name_osiris(g->ax2),
-                                      "\\mu m", g->ax2_min, g->ax2_max);
+            osiris_write_axis_dataset(g_axis, 1, "t", "t", "fs", g->t_min, g->t_max);
 
             osiris_write_axis_dataset(g_axis, 2,
                                       axis_name_osiris(g->ax1), axis_long_name_osiris(g->ax1),
                                       "\\mu m", g->ax1_min, g->ax1_max);
+        }
+        else
+        {
+            osiris_write_axis_dataset(g_axis, 1, "t", "t", "fs", g->t_min, g->t_max);
 
-            osiris_write_axis_dataset(g_axis, 3, "t", "t", "fs", g->t_min, g->t_max);
+            osiris_write_axis_dataset(g_axis, 2,
+                                      axis_name_osiris(g->ax2), axis_long_name_osiris(g->ax2),
+                                      "\\mu m", g->ax2_min, g->ax2_max);
+
+            osiris_write_axis_dataset(g_axis, 3,
+                                      axis_name_osiris(g->ax1), axis_long_name_osiris(g->ax1),
+                                      "\\mu m", g->ax1_min, g->ax1_max);
         }
         H5Gclose(g_axis);
     }
@@ -935,19 +940,19 @@ static int create_single_dataset_file(hid_t *out_f, hid_t *out_dset,
 
             if (nd == 2)
             {
-                xmin[0] = g->ax1_min;
-                xmax[0] = g->ax1_max;
-                xmin[1] = g->t_min;
-                xmax[1] = g->t_max;
+                xmin[0] = g->t_min;
+                xmax[0] = g->t_max;
+                xmin[1] = g->ax1_min;
+                xmax[1] = g->ax1_max;
             }
             else
             {
-                xmin[0] = g->ax2_min;
-                xmax[0] = g->ax2_max;
-                xmin[1] = g->ax1_min;
-                xmax[1] = g->ax1_max;
-                xmin[2] = g->t_min;
-                xmax[2] = g->t_max;
+                xmin[0] = g->t_min;
+                xmax[0] = g->t_max;
+                xmin[1] = g->ax2_min;
+                xmax[1] = g->ax2_max;
+                xmin[2] = g->ax1_min;
+                xmax[2] = g->ax1_max;
             }
 
             h5_write_attr_double_array(g_sim, "XMIN", nd, xmin);
@@ -1187,8 +1192,17 @@ static int write_parallel_files_2d(const InputGridSpec *g,
                                    int use_parallel_hdf5,
                                    MPI_Comm comm)
 {
-    /* global dims: [t, ax1] */
-    hsize_t gdims[2] = {(hsize_t)g->t_n, (hsize_t)g->ax1_n};
+    /* global dims: [ax1, t] -- ax1 (the per-rank decomposed axis) is OUTER/slow,
+       t is INNER/fast. This is deliberately reversed from the "natural" [t, ax1]
+       reading order: with ax1 outer, each rank's spatial slab is a single
+       contiguous run in the file (full time range x its ax1 range), instead of
+       t_n separate small strided writes (one per timestep) that a [t, ax1]
+       layout would force -- since each rank would then own only a slice of the
+       FASTEST-varying dimension, splitting every timestep's row across ranks.
+       Bonus: every downstream reader (ionization_diag.c/mdf_diag.c/
+       mdf_particles.c) wants "the full time series at one fixed spatial point",
+       which is now a single contiguous read instead of a stride-ax1_n read. */
+    hsize_t gdims[2] = {(hsize_t)g->ax1_n, (hsize_t)g->t_n};
 
     /* timing breakdown (per-rank, reduced later) */
     double t_create_local = 0.0;  /* create files + datasets + metadata */
@@ -1287,7 +1301,7 @@ static int write_parallel_files_2d(const InputGridSpec *g,
        once per timestep): each thread owns a disjoint slab of planes and walks
        the whole block's time range for those planes, advancing the A-integration
        recurrence per plane. This keeps a single fork/join per block and preserves
-       the [t, ax1] block layout the writer below expects. Whether the plane loop
+       the [ax1, t] block layout the writer below expects. Whether the plane loop
        is actually threaded is gated below (see MIN_PLANES_PER_THREAD) to avoid
        false sharing on small grids. */
     for (int t0 = 0; t0 < g->t_n; )
@@ -1299,12 +1313,12 @@ static int write_parallel_files_2d(const InputGridSpec *g,
         ttmp0 = now_s(comm);
 #ifdef _OPENMP
         /* Only thread the plane loop when each thread can own a large enough,
-           contiguous slab of planes. The block is row-major [t, ax1] float, so
-           threads that split a short ax1 row share cache lines on every write
-           (false sharing) — which on small grids is far more expensive than the
-           work itself and gets strictly worse with more threads. Require at
-           least MIN_PLANES_PER_THREAD (>= 2 cache lines of float) per thread;
-           otherwise run the region serially. */
+           contiguous slab of planes. The block is row-major [ax1, t] float, with
+           each thread owning a contiguous, disjoint range of whole ax1 rows (each
+           row is `nb` floats) -- so unlike a [t, ax1] layout, threads never share
+           a cache line even at the boundary between their ranges. Still gated on
+           MIN_PLANES_PER_THREAD to avoid fork/join overhead dominating on small
+           grids. */
         const size_t MIN_PLANES_PER_THREAD = 32;
         #pragma omp parallel for schedule(static) \
             if (a1_nloc >= MIN_PLANES_PER_THREAD * (size_t)omp_get_max_threads())
@@ -1325,7 +1339,7 @@ static int write_parallel_files_2d(const InputGridSpec *g,
                 double E[3];
                 LaserPulse_E(pulse, t, r, E);
 
-                const size_t off = (size_t)lit * a1_nloc + ia;
+                const size_t off = ia * (size_t)nb + (size_t)lit;
                 Ex_blk[off] = (float)E[0];
                 Ey_blk[off] = (float)E[1];
                 Ez_blk[off] = (float)E[2];
@@ -1357,9 +1371,9 @@ static int write_parallel_files_2d(const InputGridSpec *g,
         {
             ttmp0 = now_s(comm);
 
-            /* file hyperslab: [t0: t0+nb, a1_i0 : a1_i0+a1_nloc] */
-            hsize_t start[2] = {(hsize_t)t0, (hsize_t)a1_i0};
-            hsize_t count[2] = {(hsize_t)nb, (hsize_t)a1_nloc};
+            /* file hyperslab: [a1_i0 : a1_i0+a1_nloc, t0 : t0+nb] */
+            hsize_t start[2] = {(hsize_t)a1_i0, (hsize_t)t0};
+            hsize_t count[2] = {(hsize_t)a1_nloc, (hsize_t)nb};
 
             hid_t mspace = H5Screate_simple(2, count, NULL);
             if (mspace < 0)
@@ -1472,8 +1486,12 @@ static int write_parallel_files_3d(const InputGridSpec *g,
                                    int use_parallel_hdf5,
                                    MPI_Comm comm)
 {
-    /* global dims: [t, ax1, ax2] ; decompose ax1 (middle dim) */
-    hsize_t gdims[3] = {(hsize_t)g->t_n, (hsize_t)g->ax1_n, (hsize_t)g->ax2_n};
+    /* global dims: [ax1, ax2, t] ; decompose ax1 (now the OUTER/slowest dim).
+       Same rationale as the 2D writer: ax1 outer makes each rank's slab one
+       contiguous file region instead of t_n scattered per-timestep writes, and
+       makes every downstream "time series at one fixed (ax1,ax2) point" read
+       contiguous instead of strided. */
+    hsize_t gdims[3] = {(hsize_t)g->ax1_n, (hsize_t)g->ax2_n, (hsize_t)g->t_n};
 
     /* timing breakdown (per-rank, reduced later) */
     double t_create_local = 0.0;  /* create files + datasets + metadata */
@@ -1566,6 +1584,22 @@ static int write_parallel_files_3d(const InputGridSpec *g,
     if (!Ex_blk || !Ey_blk || !Ez_blk || (compute_A && (!Ax_blk || !Ay_blk || !Az_blk)))
         return 21;
 
+    /* Ex_blk etc accumulate one timestep at a time, so they stay simple/
+       contiguous in [time][plane] order (unchanged from before). Since the
+       file layout is now [ax1, ax2, t] (see gdims above), transpose into
+       [plane][time] just before each flush -- cheap (O(nb*plane), bounded,
+       happens once per flush not once per timestep) and keeps the hot
+       per-timestep fill loop above completely untouched. */
+    float *Ex_blkT = (float *)malloc(block_cap * plane * sizeof(float));
+    float *Ey_blkT = (float *)malloc(block_cap * plane * sizeof(float));
+    float *Ez_blkT = (float *)malloc(block_cap * plane * sizeof(float));
+    float *Ax_blkT = compute_A ? (float *)malloc(block_cap * plane * sizeof(float)) : NULL;
+    float *Ay_blkT = compute_A ? (float *)malloc(block_cap * plane * sizeof(float)) : NULL;
+    float *Az_blkT = compute_A ? (float *)malloc(block_cap * plane * sizeof(float)) : NULL;
+
+    if (!Ex_blkT || !Ey_blkT || !Ez_blkT || (compute_A && (!Ax_blkT || !Ay_blkT || !Az_blkT)))
+        return 22;
+
     int t0 = 0;
     int nb = 0;
 
@@ -1654,9 +1688,33 @@ static int write_parallel_files_3d(const InputGridSpec *g,
         if ((size_t)nb == block_cap || it == g->t_n - 1)
         {
             ttmp0 = now_s(comm);
-            /* contiguous hyperslab for each rank: [t0:t0+nb, a1_i0:a1_i0+a1_nloc, 0:ax2_n] */
-            hsize_t start[3] = {(hsize_t)t0, (hsize_t)a1_i0, 0};
-            hsize_t count[3] = {(hsize_t)nb, (hsize_t)a1_nloc, (hsize_t)g->ax2_n};
+
+            /* Transpose the accumulated [time][plane] block into [plane][time]
+               to match the new [ax1, ax2, t] file layout (see gdims above) --
+               each (ia,i2) point's `nb` time samples become contiguous. */
+            const size_t nb_sz = (size_t)nb;
+#ifdef _OPENMP
+            #pragma omp parallel for schedule(static)
+#endif
+            for (size_t idx = 0; idx < plane; ++idx)
+            {
+                for (size_t lit = 0; lit < nb_sz; ++lit)
+                {
+                    Ex_blkT[idx * nb_sz + lit] = Ex_blk[lit * plane + idx];
+                    Ey_blkT[idx * nb_sz + lit] = Ey_blk[lit * plane + idx];
+                    Ez_blkT[idx * nb_sz + lit] = Ez_blk[lit * plane + idx];
+                    if (compute_A)
+                    {
+                        Ax_blkT[idx * nb_sz + lit] = Ax_blk[lit * plane + idx];
+                        Ay_blkT[idx * nb_sz + lit] = Ay_blk[lit * plane + idx];
+                        Az_blkT[idx * nb_sz + lit] = Az_blk[lit * plane + idx];
+                    }
+                }
+            }
+
+            /* contiguous hyperslab for each rank: [a1_i0:a1_i0+a1_nloc, 0:ax2_n, t0:t0+nb] */
+            hsize_t start[3] = {(hsize_t)a1_i0, 0, (hsize_t)t0};
+            hsize_t count[3] = {(hsize_t)a1_nloc, (hsize_t)g->ax2_n, (hsize_t)nb};
 
             hid_t mspace = H5Screate_simple(3, count, NULL);
             if (mspace < 0)
@@ -1686,14 +1744,14 @@ static int write_parallel_files_3d(const InputGridSpec *g,
         H5Sclose(fspace);                                                              \
     } while (0)
 
-            WRITE_ONE_3D(dEx, Ex_blk);
-            WRITE_ONE_3D(dEy, Ey_blk);
-            WRITE_ONE_3D(dEz, Ez_blk);
+            WRITE_ONE_3D(dEx, Ex_blkT);
+            WRITE_ONE_3D(dEy, Ey_blkT);
+            WRITE_ONE_3D(dEz, Ez_blkT);
             if (compute_A)
             {
-                WRITE_ONE_3D(dAx, Ax_blk);
-                WRITE_ONE_3D(dAy, Ay_blk);
-                WRITE_ONE_3D(dAz, Az_blk);
+                WRITE_ONE_3D(dAx, Ax_blkT);
+                WRITE_ONE_3D(dAy, Ay_blkT);
+                WRITE_ONE_3D(dAz, Az_blkT);
             }
 
 #undef WRITE_ONE_3D
@@ -1722,6 +1780,13 @@ static int write_parallel_files_3d(const InputGridSpec *g,
     free(Ax_blk);
     free(Ay_blk);
     free(Az_blk);
+
+    free(Ex_blkT);
+    free(Ey_blkT);
+    free(Ez_blkT);
+    free(Ax_blkT);
+    free(Ay_blkT);
+    free(Az_blkT);
 
 #ifdef H5_HAVE_PARALLEL
     if (use_parallel_hdf5 && dxpl_local >= 0)
