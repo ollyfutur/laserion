@@ -28,6 +28,22 @@ static void join_path(char *out, size_t outsz, const char *a, const char *b)
         snprintf(out, outsz, "%s%s", a, b);
 }
 
+static void decompose_1d(size_t n, int rank, int nranks, size_t *i0, size_t *nloc)
+{
+    const size_t base = n / (size_t)nranks;
+    const size_t rem = n % (size_t)nranks;
+    if ((size_t)rank < rem)
+    {
+        *nloc = base + 1;
+        *i0 = (size_t)rank * (base + 1);
+    }
+    else
+    {
+        *nloc = base;
+        *i0 = rem * (base + 1) + ((size_t)rank - rem) * base;
+    }
+}
+
 static char grid_axis_to_char(Axis a)
 {
     switch (a)
@@ -354,20 +370,20 @@ int iongrid_run_full_from_cache(const InputSimSpec *sim,
     if (!sim || !cache_dir || !out_dir)
         return 1;
 
-    int rank = 0;
+    int rank = 0, nranks = 1;
     MPI_Comm_rank(comm, &rank);
-
-    /* Root-only implementation for now (consistent with field_diag). */
-    if (rank != 0)
-    {
-        MPI_Barrier(comm);
-        return 0;
-    }
+    MPI_Comm_size(comm, &nranks);
 
     const InputGridSpec *g = &sim->grid;
     const size_t t_n = (size_t)g->t_n;
     const size_t ax1_n = (size_t)g->ax1_n;
     const size_t ax2_n = g->has_ax2 ? (size_t)g->ax2_n : 1u;
+
+    /* Decompose the outer (slow) spatial axis across ranks so each rank's
+     * slice is contiguous in the flat gidx = gi2*ax1_n + gi1 output array. */
+    const size_t outer_n = g->has_ax2 ? ax2_n : ax1_n;
+    size_t outer_i0 = 0, outer_nloc = outer_n;
+    decompose_1d(outer_n, rank, nranks, &outer_i0, &outer_nloc);
 
     /* Determine Z list from ADK tables for the chosen gas. */
     int Zmax = 0;
@@ -495,28 +511,38 @@ int iongrid_run_full_from_cache(const InputSimSpec *sim,
         goto fail;
     }
 
-    printf("run: ionization_frac — computing full grid from cache (%s), gas=%s, Zmax=%d\n\n",
-           cache_dir, sim->run.gas, Zmax);
-    fflush(stdout);
-
-    for (size_t i2_0 = 0; i2_0 < ax2_n; i2_0 += tile2)
+    if (rank == 0)
     {
-        const size_t n2 = (i2_0 + tile2 <= ax2_n) ? tile2 : (ax2_n - i2_0);
+        printf("run: ionization_frac — computing full grid from cache (%s), gas=%s, Zmax=%d\n\n",
+               cache_dir, sim->run.gas, Zmax);
+        fflush(stdout);
+    }
 
-        for (size_t i1_0 = 0; i1_0 < ax1_n; i1_0 += tile1)
+    const size_t i2_lo = g->has_ax2 ? outer_i0 : 0;
+    const size_t i2_hi = g->has_ax2 ? (outer_i0 + outer_nloc) : ax2_n;
+    const size_t i1_lo = g->has_ax2 ? 0 : outer_i0;
+    const size_t i1_hi = g->has_ax2 ? ax1_n : (outer_i0 + outer_nloc);
+
+    int loop_rc = 0;
+
+    for (size_t i2_0 = i2_lo; i2_0 < i2_hi; i2_0 += tile2)
+    {
+        const size_t n2 = (i2_0 + tile2 <= i2_hi) ? tile2 : (i2_hi - i2_0);
+
+        for (size_t i1_0 = i1_lo; i1_0 < i1_hi; i1_0 += tile1)
         {
-            const size_t n1 = (i1_0 + tile1 <= ax1_n) ? tile1 : (ax1_n - i1_0);
+            const size_t n1 = (i1_0 + tile1 <= i1_hi) ? tile1 : (i1_hi - i1_0);
 
             /* Read tile for Ex/Ey/Ez */
-            rc = cachecomp_read_tile(&cEx, g, i1_0, n1, i2_0, n2, bufEx);
-            if (rc != 0)
-                goto fail;
-            rc = cachecomp_read_tile(&cEy, g, i1_0, n1, i2_0, n2, bufEy);
-            if (rc != 0)
-                goto fail;
-            rc = cachecomp_read_tile(&cEz, g, i1_0, n1, i2_0, n2, bufEz);
-            if (rc != 0)
-                goto fail;
+            loop_rc = cachecomp_read_tile(&cEx, g, i1_0, n1, i2_0, n2, bufEx);
+            if (loop_rc != 0)
+                goto loop_done;
+            loop_rc = cachecomp_read_tile(&cEy, g, i1_0, n1, i2_0, n2, bufEy);
+            if (loop_rc != 0)
+                goto loop_done;
+            loop_rc = cachecomp_read_tile(&cEz, g, i1_0, n1, i2_0, n2, bufEz);
+            if (loop_rc != 0)
+                goto loop_done;
 
             /* For each spatial cell in tile, compute ionization from its time trace */
             for (size_t j2 = 0; j2 < n2; ++j2)
@@ -561,6 +587,68 @@ int iongrid_run_full_from_cache(const InputSimSpec *sim,
                 }
             }
         }
+    }
+
+loop_done:
+    {
+        int rc_global = 0;
+        MPI_Allreduce(&loop_rc, &rc_global, 1, MPI_INT, MPI_MAX, comm);
+        if (rc_global != 0)
+        {
+            rc = rc_global;
+            goto fail;
+        }
+    }
+
+    /* Gather each rank's contiguous slice of the flat (gi2*ax1_n + gi1)
+     * output arrays onto root. */
+    {
+        int *counts = (int *)malloc((size_t)nranks * sizeof(int));
+        int *displs = (int *)malloc((size_t)nranks * sizeof(int));
+        if (!counts || !displs)
+        {
+            free(counts);
+            free(displs);
+            rc = 22;
+            goto fail;
+        }
+        for (int r = 0; r < nranks; ++r)
+        {
+            size_t r_i0 = 0, r_nloc = outer_n;
+            decompose_1d(outer_n, r, nranks, &r_i0, &r_nloc);
+            const size_t flat_off = g->has_ax2 ? r_i0 * ax1_n : r_i0;
+            const size_t flat_cnt = g->has_ax2 ? r_nloc * ax1_n : r_nloc;
+            counts[r] = (int)flat_cnt;
+            displs[r] = (int)flat_off;
+        }
+
+        const size_t local_off = g->has_ax2 ? outer_i0 * ax1_n : outer_i0;
+        const size_t local_cnt = g->has_ax2 ? outer_nloc * ax1_n : outer_nloc;
+
+        for (size_t iz = 0; iz < nZ; ++iz)
+        {
+            if (rank == 0)
+                MPI_Gatherv(MPI_IN_PLACE, (int)local_cnt, MPI_FLOAT,
+                           outP[iz], counts, displs, MPI_FLOAT, 0, comm);
+            else
+                MPI_Gatherv(outP[iz] + local_off, (int)local_cnt, MPI_FLOAT,
+                           NULL, NULL, NULL, MPI_FLOAT, 0, comm);
+        }
+        if (rank == 0)
+            MPI_Gatherv(MPI_IN_PLACE, (int)local_cnt, MPI_FLOAT,
+                       outTot, counts, displs, MPI_FLOAT, 0, comm);
+        else
+            MPI_Gatherv(outTot + local_off, (int)local_cnt, MPI_FLOAT,
+                       NULL, NULL, NULL, MPI_FLOAT, 0, comm);
+
+        free(counts);
+        free(displs);
+    }
+
+    if (rank != 0)
+    {
+        rc = 0;
+        goto fail;
     }
 
     /* Write outputs: one file per Z and total. */

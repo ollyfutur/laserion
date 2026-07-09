@@ -853,15 +853,9 @@ int field_diag_run_from_cache(const InputSimSpec *sim,
 
     FieldDiagOptions opt = opt_in ? *opt_in : field_diag_default_options();
 
-    int rank = 0;
+    int rank = 0, nranks = 1;
     MPI_Comm_rank(comm, &rank);
-
-    /* Root-only IO path for now. */
-    if (rank != opt.root_rank)
-    {
-        MPI_Barrier(comm);
-        return 0;
-    }
+    MPI_Comm_size(comm, &nranks);
 
     const FieldDiagList *L = &sim->field_diag;
     if (!L || L->n <= 0)
@@ -871,6 +865,7 @@ int field_diag_run_from_cache(const InputSimSpec *sim,
     }
 
     int first_error = 0;
+    int job_idx = 0;
 
     for (int i = 0; i < L->n; ++i)
     {
@@ -885,6 +880,12 @@ int field_diag_run_from_cache(const InputSimSpec *sim,
 
         for (int c = 0; c < d->ncomp; ++c)
         {
+            /* Independent (request, component) jobs: each reads its own cache
+             * slice and writes its own distinct output file, so they can be
+             * round-robined across ranks with no gather needed afterward. */
+            if ((job_idx++) % nranks != rank)
+                continue;
+
             const char *comp = d->comp[c];
 
             float *slice = NULL;
@@ -961,6 +962,7 @@ int field_diag_run_from_cache(const InputSimSpec *sim,
         }
     }
 
-    MPI_Barrier(comm);
-    return first_error;
+    int global_error = 0;
+    MPI_Allreduce(&first_error, &global_error, 1, MPI_INT, MPI_MAX, comm);
+    return global_error;
 }
